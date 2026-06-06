@@ -27,12 +27,26 @@ function streakOf(code) {
   return n;
 }
 
-async function generate(force = false) {
-  if (!inTauri || !aiReady() || pending) return;
+function setRefreshBtn(busy) {
+  const b = document.getElementById('recRefresh');
+  b.textContent = busy ? '⏳ 生成中…' : '↻ 重新生成';
+  b.disabled = busy;
+}
+
+async function generate(force = false, manual = false) {
+  // manual=true 是用户点按钮，给出明确反馈；auto 模式保持安静
+  if (!inTauri) { if (manual) flashHint('浏览器预览无法调用 AI'); return; }
+  if (!aiReady()) { if (manual) flashHint('先在设置页接入 AI API Key'); return; }
+  if (pending) { if (manual) flashHint('AI 正在生成中，约需 30~60 秒，请稍候'); return; }
   const tk = today();
   if (!force && state.recHistory[tk]) return;
   pending = true;
+  // 立即清掉旧结果（保留备份，失败时恢复），让界面马上切到"生成中"状态
+  const backup = state.recHistory[tk];
+  delete state.recHistory[tk];
+  setRefreshBtn(true);
   renderRecommend(); // 显示"生成中"
+  let ok = false;
   try {
     const s = getSentiment();
     const ctx = s
@@ -41,6 +55,7 @@ async function generate(force = false) {
     const recs = await aiRecommend(ctx);
     if (Array.isArray(recs) && recs.length) {
       state.recHistory[tk] = recs;
+      ok = true;
       // 只留最近 30 个推荐日
       const days = Object.keys(state.recHistory).sort().reverse();
       for (const d of days.slice(30)) delete state.recHistory[d];
@@ -50,7 +65,9 @@ async function generate(force = false) {
     console.warn('AI 推荐失败:', e);
     flashHint('AI 推荐失败：' + e);
   } finally {
+    if (!ok && backup) state.recHistory[tk] = backup; // 失败恢复旧结果
     pending = false;
+    setRefreshBtn(false);
     renderRecommend();
   }
 }
@@ -67,7 +84,7 @@ export function renderRecommend() {
   meta.textContent = recs ? tk : '';
   if (!recs) {
     if (pending) {
-      list.innerHTML = '<div class="rec-empty">AI 正在详尽分析今日盘面，稍候…</div>';
+      list.innerHTML = '<div class="rec-empty">⏳ AI 正在详尽分析今日盘面并用实时行情复核，约需 30~60 秒…</div>';
       note.textContent = '';
     } else if (!aiReady()) {
       list.innerHTML = '<div class="rec-empty">接入 AI（设置页）后，每天自动生成 3 支推荐</div>';
@@ -133,11 +150,7 @@ export function initRecommend() {
       back: 'market',
     });
   });
-  document.getElementById('recRefresh').addEventListener('click', () => {
-    if (!inTauri) { flashHint('浏览器预览无法调用 AI'); return; }
-    if (!aiReady()) { flashHint('先在设置页接入 AI API Key'); return; }
-    generate(true);
-  });
+  document.getElementById('recRefresh').addEventListener('click', () => generate(true, true));
   // 启动后自动生成（当天没有才生成）
   generate(false);
 }
