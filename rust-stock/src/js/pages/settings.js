@@ -2,8 +2,33 @@
 import { state, saveSettings } from '../store.js';
 import { listSources } from '../api.js';
 import { flashHint } from '../ui.js';
+import { inTauri, invoke } from '../bridge.js';
+
+// 开机自启动（tauri-plugin-autostart）
+async function initAutostart() {
+  const btn = document.getElementById('autostartBtn');
+  if (!inTauri) { btn.textContent = '浏览器预览不可用'; return; }
+  const render = (on) => {
+    btn.textContent = on ? '已开启（点击关闭）' : '已关闭（点击开启）';
+    btn.style.background = on ? 'var(--accent)' : 'var(--surface-3)';
+    btn.style.color = on ? '#fff' : 'var(--txt-2)';
+  };
+  let on = false;
+  try { on = !!(await invoke('plugin:autostart|is_enabled')); }
+  catch (e) { btn.textContent = '检测失败'; console.warn(e); return; }
+  render(on);
+  btn.addEventListener('click', async () => {
+    try {
+      await invoke(on ? 'plugin:autostart|disable' : 'plugin:autostart|enable');
+      on = !on;
+      render(on);
+      flashHint(on ? '已设为开机自启' : '已取消开机自启');
+    } catch (e) { flashHint('设置失败：' + e); }
+  });
+}
 
 export async function initSettings(onSaved) {
+  initAutostart();
   const sel = document.getElementById('setSource');
   // 数据源下拉框由 Rust 注册表动态生成；浏览器预览保留 HTML 里的静态项
   const sources = await listSources();

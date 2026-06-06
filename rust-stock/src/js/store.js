@@ -7,6 +7,7 @@ export const state = {
   settings: { ...DEFAULT_SETTINGS },
   watchlist: [],
   aiCache: {},
+  recHistory: {}, // { "2026-06-06": [{code,name,score,reason}] }
 };
 
 export async function storeGet(key, fallback) {
@@ -33,10 +34,12 @@ export async function loadAll() {
   state.settings = { ...DEFAULT_SETTINGS, ...(await storeGet('settings', {})) };
   state.watchlist = await storeGet('watchlist', []);
   state.aiCache = await storeGet('ai_cache', {});
+  state.recHistory = await storeGet('rec_history', {});
 }
 
 export function saveSettings(s) { state.settings = s; storeSet('settings', s); }
 export function saveWatch() { storeSet('watchlist', state.watchlist); }
 export function saveAiCache() { storeSet('ai_cache', state.aiCache); }
+export function saveRecHistory() { storeSet('rec_history', state.recHistory); }
 export const today = () => new Date().toISOString().slice(0, 10);
 export const aiReady = () => inTauri && !!state.settings.key;

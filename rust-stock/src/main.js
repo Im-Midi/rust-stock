@@ -15,6 +15,9 @@ import { loadNews, renderFeed } from './js/pages/news.js';
 import { renderWatch, initWatch } from './js/pages/watch.js';
 import { initChat } from './js/pages/chat.js';
 import { initSettings } from './js/pages/settings.js';
+import { initAnalysis } from './js/pages/analysis.js';
+import { initKline } from './js/pages/kline.js';
+import { renderRecommend, initRecommend } from './js/pages/recommend.js';
 
 // ---------- 窗口控制 ----------
 function initWindowControls() {
@@ -60,11 +63,15 @@ setInterval(async () => {
   initMarket();
   initWatch();
   initChat();
-  initSettings(() => { restartTimer(); renderTicker(); renderWatch(); });
+  initAnalysis();
+  initKline();
+  initSettings(() => { restartTimer(); renderTicker(); renderWatch(); renderRecommend(); });
 
   renderHeat();
   renderTicker();
-  renderSentiment();
+  await renderSentiment(); // 推荐的盘面背景依赖情绪结果
+  initRecommend();
+  renderRecommend();
   await loadNews();
   renderFeed('feed');
   restartTimer();

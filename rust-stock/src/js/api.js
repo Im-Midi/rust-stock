@@ -33,6 +33,14 @@ export async function fetchNews() {
   } catch (e) { console.warn('快讯抓取失败:', e); return null; }
 }
 
+export async function fetchKline(code, period, count) {
+  if (!inTauri) return null;
+  try {
+    const c = await invoke('fetch_kline', { code, period, count });
+    return (Array.isArray(c) && c.length) ? c : null;
+  } catch (e) { console.warn('K线获取失败:', e); return null; }
+}
+
 export async function fetchSentiment() {
   if (!inTauri) return null;
   try { return await invoke('fetch_sentiment'); }
@@ -49,3 +57,5 @@ export const explainSentiment = (score, label, detail) =>
   invoke('explain_sentiment', { ...aiArgs(), score, label, detail });
 export const askAi = (question, history) =>
   invoke('ask_ai', { ...aiArgs(), question, history });
+export const aiRecommend = (context) =>
+  invoke('ai_recommend', { ...aiArgs(), context });

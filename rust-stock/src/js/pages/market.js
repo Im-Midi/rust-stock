@@ -55,6 +55,7 @@ export async function renderTicker() {
 }
 
 let lastSentiment = null;
+export const getSentiment = () => lastSentiment;
 const sentWhyCache = {}; // day|label|分桶 → AI 解读（会话内缓存）
 
 export async function renderSentiment() {

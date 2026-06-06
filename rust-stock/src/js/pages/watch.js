@@ -2,8 +2,10 @@
 import { fetchQuotes, normalizeCode, analyzeStock } from '../api.js';
 import { state, saveWatch, saveAiCache, today, aiReady } from '../store.js';
 import { flashHint } from '../ui.js';
-import { switchPage, currentPage } from '../router.js';
+import { currentPage } from '../router.js';
 import { inTauri } from '../bridge.js';
+import { showAnalysis } from './analysis.js';
+import { showKline } from './kline.js';
 
 // 浏览器预览用的稳定假行情
 function mockQuote(code) {
@@ -63,6 +65,7 @@ export async function renderWatch() {
 
   let quotes = await fetchQuotes(wl);
   if (!quotes) quotes = wl.map(mockQuote);
+  quotes.forEach((q, i) => { lastNames[wl[i]] = q.name; });
 
   list.innerHTML = quotes.map((q, i) => {
     const up = q.change_pct >= 0;
@@ -101,22 +104,16 @@ function openAnalysis(i) {
   }
   const hit = state.aiCache[code];
   if (!hit || hit.day !== today()) { flashHint('AI 正在分析这支股票，稍候再点'); return; }
-  document.getElementById('anaName').textContent = `${hit.name} · AI 分析`;
-  const scoreEl = document.getElementById('anaScore');
-  scoreEl.textContent = (hit.score > 0 ? '+' : '') + hit.score;
-  scoreEl.className = 'gauge-val ' + (hit.score >= 0 ? 'ana-score-up' : 'ana-score-down');
-  document.getElementById('anaTxt').textContent = hit.analysis || '（AI 未给出文字理由）';
-  document.getElementById('anaMeta').textContent = `${code.toUpperCase()} · 分析日期 ${hit.day} · 仅供参考，不构成投资建议`;
-  switchPage('analysis');
-  const needle = document.getElementById('anaNeedle');
-  needle.style.transition = 'none';
-  needle.setAttribute('transform', 'rotate(0 100 100)');
-  requestAnimationFrame(() => {
-    needle.style.transition = 'transform 1s cubic-bezier(.22,1,.36,1)';
-    needle.style.transformBox = 'view-box';
-    needle.setAttribute('transform', `rotate(${hit.score * 0.9} 100 100)`);
+  showAnalysis({
+    title: `${hit.name} · AI 分析`,
+    score: hit.score,
+    text: hit.analysis,
+    meta: `${code.toUpperCase()} · 分析日期 ${hit.day} · 仅供参考，不构成投资建议`,
+    back: 'watch',
   });
 }
+
+let lastNames = {}; // code → 最近一次行情里的名称（K线页标题用）
 
 export function initWatch() {
   document.getElementById('watchAddBtn').addEventListener('click', addWatch);
@@ -125,10 +122,18 @@ export function initWatch() {
     const gauge = e.target.closest('.w-gauge');
     if (gauge) { openAnalysis(+gauge.dataset.i); return; }
     const btn = e.target.closest('.watch-del');
-    if (!btn) return;
-    state.watchlist.splice(+btn.dataset.i, 1);
-    saveWatch();
-    renderWatch();
+    if (btn) {
+      state.watchlist.splice(+btn.dataset.i, 1);
+      saveWatch();
+      renderWatch();
+      return;
+    }
+    // 点名称/价格区域 → K线
+    const row = e.target.closest('.watch-row');
+    if (row && e.target.closest('.w-name, .w-quote')) {
+      const i = +row.querySelector('.w-gauge').dataset.i;
+      const code = state.watchlist[i];
+      showKline(code, lastNames[code]);
+    }
   });
-  document.getElementById('anaBack').addEventListener('click', () => switchPage('watch'));
 }

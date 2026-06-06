@@ -4,6 +4,7 @@ import { scrollBodyTop } from './ui.js';
 const PAGES = {
   market: 'page-market', news: 'page-news', watch: 'page-watch',
   settings: 'page-settings', analysis: 'page-analysis', chat: 'page-chat',
+  kline: 'page-kline',
 };
 const onShowHooks = {};
 let current = 'market';
@@ -17,7 +18,8 @@ export function switchPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(PAGES[name]).classList.add('active');
   // 分析详情页归属"自选"导航高亮；聊天页归属"行情"
-  const navName = name === 'analysis' ? 'watch' : (name === 'chat' ? 'market' : name);
+  const SUB = { analysis: 'watch', kline: 'watch', chat: 'market' };
+  const navName = SUB[name] || name;
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.page === navName));
   if (onShowHooks[name]) onShowHooks[name]();
   scrollBodyTop();
