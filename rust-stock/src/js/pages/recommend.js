@@ -8,9 +8,9 @@ import { showAnalysis } from './analysis.js';
 import { getSentiment } from './market.js';
 
 const mockRecs = [
-  { code: 'sh600519', name: '贵州茅台', score: 72, reason: '（浏览器预览示例）高端白酒需求韧性强，渠道动销回暖，估值处历史中位；技术面突破年线。风险：消费复苏不及预期。' },
-  { code: 'sz300750', name: '宁德时代', score: 55, reason: '（浏览器预览示例）动力电池份额稳固，储能业务高增；近期回调后估值合理。风险：行业价格战。' },
-  { code: 'sh688041', name: '海光信息', score: 48, reason: '（浏览器预览示例）国产算力需求旺盛，订单能见度高。风险：供应链与估值波动。' },
+  { code: 'sh600519', name: '贵州茅台', score: 72, change_pct: 1.85, reason: '（浏览器预览示例）高端白酒需求韧性强，渠道动销回暖，估值处历史中位；技术面突破年线。风险：消费复苏不及预期。' },
+  { code: 'sz300750', name: '宁德时代', score: 55, change_pct: 0.42, reason: '（浏览器预览示例）动力电池份额稳固，储能业务高增；近期回调后估值合理。风险：行业价格战。' },
+  { code: 'sh688041', name: '海光信息', score: 48, change_pct: -0.31, reason: '（浏览器预览示例）国产算力需求旺盛，订单能见度高。风险：供应链与估值波动。' },
 ];
 
 let pending = false;
@@ -90,11 +90,16 @@ export function renderRecommend() {
         <b>${starred ? '<span class="star">★</span> ' : ''}${r.name}${starred ? `<span class="r-streak">已连续 ${streak} 日推荐</span>` : ''}</b>
         <i>${r.code.toUpperCase()}</i>
       </div>
-      <div class="r-score ${up ? 'up-c' : 'down-c'}">${up ? '+' : ''}${r.score}</div>
+      <div class="r-right">
+        <div class="r-score ${up ? 'up-c' : 'down-c'}">${up ? '+' : ''}${r.score}</div>
+        ${typeof r.change_pct === 'number' && r.price !== 0
+          ? `<div class="r-chg ${r.change_pct >= 0 ? 'up-c' : 'down-c'}">今日 ${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%</div>`
+          : ''}
+      </div>
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
-  note.textContent = 'AI 生成，按日缓存。★ = 连续一周（≥7 个推荐日）推荐同一支。仅供参考，不构成投资建议。';
+  note.textContent = 'AI 候选已用实时行情复核（当日明显下跌/查无此码的自动淘汰）。★ = 连续一周（≥7 个推荐日）推荐同一支。仅供参考，不构成投资建议。';
 }
 
 function addToWatch(i) {

@@ -1,12 +1,16 @@
-// pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量），自选股点名称进入
+// pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
+// 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
 import { fetchKline } from '../api.js';
 import { switchPage } from '../router.js';
 import { inTauri } from '../bridge.js';
 
 const cur = { code: null, name: '', period: 'day' };
+let data = [];                      // 全量K线缓存（最多 250 根）
+let view = { start: 0, count: 90 }; // 当前可视窗口
+const FETCH_N = 250;
 
 // 浏览器预览：按代码种子生成稳定的随机游走K线
-function mockCandles(code, n = 90) {
+function mockCandles(code, n = FETCH_N) {
   let seed = [...code].reduce((a, c) => a + c.charCodeAt(0), 7);
   const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
   let price = 20 + (seed % 180);
@@ -30,24 +34,29 @@ function mockCandles(code, n = 90) {
   return out;
 }
 
-function ma(candles, n) {
-  return candles.map((_, i) => {
-    if (i < n - 1) return null;
+// 基于全量数据算 MA，再切片，保证窗口左缘的均线也准确
+function maSlice(n, start, count) {
+  const out = [];
+  for (let i = start; i < start + count; i++) {
+    if (i < n - 1) { out.push(null); continue; }
     let s = 0;
-    for (let j = i - n + 1; j <= i; j++) s += candles[j].close;
-    return s / n;
-  });
+    for (let j = i - n + 1; j <= i; j++) s += data[j].close;
+    out.push(s / n);
+  }
+  return out;
 }
 
-function draw(candles) {
+function draw() {
+  const candles = data.slice(view.start, view.start + view.count);
+  if (!candles.length) return;
   const cv = document.getElementById('klineCanvas');
   const ctx = cv.getContext('2d');
   const W = cv.width, H = cv.height;
   ctx.clearRect(0, 0, W, H);
 
   const padL = 8, padR = 64, padT = 14;
-  const priceH = H * 0.68;            // 上 68% 画蜡烛
-  const volTop = priceH + 24;         // 下方画成交量
+  const priceH = H * 0.68;
+  const volTop = priceH + 24;
   const volH = H - volTop - 10;
   const plotW = W - padL - padR;
 
@@ -59,11 +68,10 @@ function draw(candles) {
 
   const n = candles.length;
   const step = plotW / n;
-  const bw = Math.max(2, step * 0.62);
+  const bw = Math.max(1.5, step * 0.62);
 
   const UP = '#ff4d4f', DOWN = '#14c87d';
 
-  // 网格 + 右侧价格刻度
   ctx.font = '16px "DM Mono", monospace';
   ctx.textBaseline = 'middle';
   for (let i = 0; i <= 4; i++) {
@@ -75,30 +83,25 @@ function draw(candles) {
     ctx.fillText(p.toFixed(2), W - padR + 6, yy);
   }
 
-  // 蜡烛 + 成交量（A股红涨绿跌）
   candles.forEach((c, i) => {
     const x = padL + i * step + step / 2;
     const up = c.close >= c.open;
     ctx.strokeStyle = ctx.fillStyle = up ? UP : DOWN;
-    // 影线
     ctx.beginPath(); ctx.moveTo(x, y(c.high)); ctx.lineTo(x, y(c.low)); ctx.stroke();
-    // 实体
     const yo = y(c.open), yc = y(c.close);
     const top = Math.min(yo, yc), hgt = Math.max(1.5, Math.abs(yo - yc));
     if (up) { ctx.fillStyle = '#12151c'; ctx.fillRect(x - bw / 2, top, bw, hgt); ctx.strokeRect(x - bw / 2, top, bw, hgt); }
     else ctx.fillRect(x - bw / 2, top, bw, hgt);
-    // 成交量
     const vh = c.volume / maxVol * volH;
     ctx.fillStyle = up ? 'rgba(255,77,79,.5)' : 'rgba(20,200,125,.5)';
     ctx.fillRect(x - bw / 2, H - 10 - vh, bw, vh);
   });
 
-  // MA5 / MA10
-  const drawMa = (data, color) => {
+  const drawMa = (maData, color) => {
     ctx.strokeStyle = color; ctx.lineWidth = 1.6;
     ctx.beginPath();
     let started = false;
-    data.forEach((v, i) => {
+    maData.forEach((v, i) => {
       if (v == null) return;
       const x = padL + i * step + step / 2;
       if (!started) { ctx.moveTo(x, y(v)); started = true; }
@@ -106,18 +109,16 @@ function draw(candles) {
     });
     ctx.stroke(); ctx.lineWidth = 1;
   };
-  drawMa(ma(candles, 5), '#f5a623');
-  drawMa(ma(candles, 10), '#4d8dff');
+  drawMa(maSlice(5, view.start, view.count), '#f5a623');
+  drawMa(maSlice(10, view.start, view.count), '#4d8dff');
 
-  // 首尾日期
   ctx.fillStyle = '#5c6470';
   ctx.textBaseline = 'alphabetic';
   ctx.fillText(candles[0].date, padL, priceH + 18);
   const lastD = candles[n - 1].date;
   ctx.fillText(lastD, W - padR - ctx.measureText(lastD).width, priceH + 18);
 
-  // 底部信息
-  const last = candles[n - 1];
+  const last = data[data.length - 1]; // 信息栏永远显示最新一根
   const chg = (last.close - last.open) / last.open * 100;
   document.getElementById('klineInfo').innerHTML = `
     <span>开 <b>${last.open.toFixed(2)}</b></span>
@@ -129,14 +130,21 @@ function draw(candles) {
     <span style="color:#4d8dff">— MA10</span>`;
 }
 
+function resetView() {
+  view.count = Math.min(90, data.length);
+  view.start = data.length - view.count;
+}
+
 async function load() {
   document.getElementById('klineMeta').textContent = '加载中…';
-  let candles = await fetchKline(cur.code, cur.period, 90);
+  let candles = await fetchKline(cur.code, cur.period, FETCH_N);
   let mocked = false;
   if (!candles) { candles = mockCandles(cur.code); mocked = true; }
-  draw(candles);
+  data = candles;
+  resetView();
+  draw();
   document.getElementById('klineMeta').textContent =
-    `${cur.code.toUpperCase()} · ${candles.length} 根 · 前复权` + (mocked ? ' · 预览模拟数据' : ' · 东方财富');
+    `${cur.code.toUpperCase()} · 共 ${data.length} 根 · 前复权 · 滚轮缩放 / 拖动平移` + (mocked ? ' · 预览模拟数据' : ' · 东方财富');
 }
 
 export function showKline(code, name) {
@@ -154,5 +162,36 @@ export function initKline() {
     cur.period = b.dataset.p;
     if (cur.code) load();
   }));
+
+  const cv = document.getElementById('klineCanvas');
+
+  // 滚轮缩放：以光标位置为锚点（上滚放大=更少蜡烛更宽，下滚缩小）
+  cv.addEventListener('wheel', (e) => {
+    if (!data.length) return;
+    e.preventDefault();
+    const rect = cv.getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const idxAtCursor = view.start + fx * view.count;
+    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    let nc = Math.round(view.count * factor);
+    nc = Math.max(20, Math.min(data.length, nc));
+    let ns = Math.round(idxAtCursor - fx * nc);
+    ns = Math.max(0, Math.min(data.length - nc, ns));
+    view = { start: ns, count: nc };
+    draw();
+  }, { passive: false });
+
+  // 按住拖动平移
+  let pan = null;
+  cv.addEventListener('mousedown', (e) => { pan = { x: e.clientX, start: view.start }; });
+  window.addEventListener('mousemove', (e) => {
+    if (!pan || !data.length) return;
+    const rect = cv.getBoundingClientRect();
+    const dIdx = Math.round((pan.x - e.clientX) / rect.width * view.count);
+    const ns = Math.max(0, Math.min(data.length - view.count, pan.start + dIdx));
+    if (ns !== view.start) { view.start = ns; draw(); }
+  });
+  window.addEventListener('mouseup', () => { pan = null; });
+
   if (!inTauri) console.log('[preview] K线走 mock 随机游走');
 }

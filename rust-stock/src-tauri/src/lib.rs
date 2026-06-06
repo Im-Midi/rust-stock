@@ -179,6 +179,8 @@ pub struct RecStock {
     pub name: String,
     pub score: i32,
     pub reason: String,
+    pub price: f64,      // 真实现价（复核行情）
+    pub change_pct: f64, // 真实当日涨跌幅
 }
 
 #[tauri::command]
@@ -190,13 +192,14 @@ async fn ai_recommend(
 ) -> Result<Vec<RecStock>, String> {
     let cfg = ai::AiConfig::new(key, base_url, model)?;
     let prompt = format!(
-        "{context}。你是严谨的A股分析师。请推荐 3 支当前值得【买入关注】的A股股票。\
+        "{context}。你是严谨的A股分析师。请给出 6 支当前值得【买入关注】的A股候选股票\
+        （系统随后会用真实实时行情复核，自动淘汰当日明显下跌的标的，最终展示前 3 支）。\
          硬性要求：\
-         1) 只选看涨标的——看跌、破位、抛压沉重的股票绝不能出现在推荐里；\
-         2) 避开 ST、退市风险股；\
+         1) 只选看涨标的——看跌、破位、抛压沉重的股票绝不能出现；\
+         2) 避开 ST、退市风险股；代码必须真实存在；\
          3) 你无法获取实时行情，禁止编造具体的当日涨跌幅、现价等数字，\
             分析基于公司基本面、行业景气度与中期技术格局。\
-         严格只输出 JSON 数组，共 3 个元素：\
+         严格只输出 JSON 数组，共 6 个元素：\
          [{{\"code\":\"sh600519 或 sz000001 这种格式\",\"name\":\"股票名称\",\
          \"score\":1到100的整数（看涨信心，越高越看涨，不允许负数）,\
          \"reason\":\"150~250字的详尽分析：基本面/行业/技术格局依据 + 风险提示\"}}]"
@@ -208,8 +211,8 @@ async fn ai_recommend(
     let content = ai::chat_once(&cfg, messages, 0.5).await?;
     let arr = ai::extract_json_array(&content)?;
     let list = arr.as_array().ok_or("AI 返回的不是数组")?;
-    let mut out = Vec::new();
-    for item in list.iter().take(3) {
+    let mut cands: Vec<(String, String, i32, String)> = Vec::new();
+    for item in list.iter().take(6) {
         let raw_code = item["code"].as_str().unwrap_or("").trim().to_lowercase();
         // 容错：AI 可能只回 6 位数字
         let code = if raw_code.len() == 6 && raw_code.chars().all(|c| c.is_ascii_digit()) {
@@ -221,20 +224,64 @@ async fn ai_recommend(
         if !(code.len() == 8 && (code.starts_with("sh") || code.starts_with("sz"))) {
             continue; // 格式不合法的丢弃
         }
-        // 推荐里只收看涨标的：AI 若违规给出 0/负分（看跌），直接丢弃
+        // 只收看涨标的：AI 若违规给出 0/负分（看跌），直接丢弃
         let score = item["score"].as_i64().unwrap_or(0);
         if score <= 0 {
             continue;
         }
-        out.push(RecStock {
+        cands.push((
             code,
-            name: item["name"].as_str().unwrap_or("").to_string(),
-            score: score.clamp(1, 100) as i32,
-            reason: item["reason"].as_str().unwrap_or("").to_string(),
-        });
+            item["name"].as_str().unwrap_or("").to_string(),
+            score.clamp(1, 100) as i32,
+            item["reason"].as_str().unwrap_or("").to_string(),
+        ));
+    }
+    if cands.is_empty() {
+        return Err("AI 未返回符合要求的看涨推荐，请点「重新生成」".into());
+    }
+
+    // ===== 真实行情复核 =====
+    // AI 没有实时数据，推荐与个股打分可能打架。这里用真实行情把关：
+    //   1) 当日跌幅超过 1.5% 的候选淘汰（"推荐却在跌"的来源）
+    //   2) 行情里查无此码的淘汰（AI 编造的代码）
+    //   3) 剩余按 score 排序取前 3，并带回真实价格/涨跌幅供前端展示
+    let mut out: Vec<RecStock> = Vec::new();
+    let mut market_checked = false;
+    if let Some(src) = sources::get("eastmoney") {
+        let codes: Vec<String> = cands.iter().map(|c| c.0.clone()).collect();
+        if let Ok(quotes) = src.fetch(&codes).await {
+            market_checked = true;
+            for (code, name, score, reason) in &cands {
+                // 东财返回的 code 是 6 位数字（无 sh/sz 前缀），按后缀匹配
+                let Some(q) = quotes.iter().find(|q| !q.code.is_empty() && code.ends_with(&q.code)) else {
+                    continue; // 查无此码 → AI 幻觉代码，丢弃
+                };
+                if q.change_pct < -1.5 {
+                    continue; // 当日明显下跌 → 不推
+                }
+                out.push(RecStock {
+                    code: code.clone(),
+                    name: if name.is_empty() { q.name.clone() } else { name.clone() },
+                    score: *score,
+                    reason: reason.clone(),
+                    price: q.price,
+                    change_pct: q.change_pct,
+                });
+            }
+            out.sort_by(|a, b| b.score.cmp(&a.score));
+            out.truncate(3);
+        }
+    }
+    if !market_checked {
+        // 行情服务不可用：退化为未复核的前 3（price=0 表示未复核）
+        out = cands
+            .into_iter()
+            .take(3)
+            .map(|(code, name, score, reason)| RecStock { code, name, score, reason, price: 0.0, change_pct: 0.0 })
+            .collect();
     }
     if out.is_empty() {
-        return Err("AI 未返回符合要求的看涨推荐，请点「重新生成」".into());
+        return Err("AI 候选经实时行情复核后全部被淘汰（当日均在下跌或代码无效），今天可能不宜追高，请稍后再试".into());
     }
     Ok(out)
 }
