@@ -190,12 +190,16 @@ async fn ai_recommend(
 ) -> Result<Vec<RecStock>, String> {
     let cfg = ai::AiConfig::new(key, base_url, model)?;
     let prompt = format!(
-        "{context}。你是严谨的A股分析师，请经过详尽的基本面、技术面、消息面综合分析后，\
-         推荐 3 支未来一周值得关注的A股股票（避开 ST、退市风险股）。\
+        "{context}。你是严谨的A股分析师。请推荐 3 支当前值得【买入关注】的A股股票。\
+         硬性要求：\
+         1) 只选看涨标的——看跌、破位、抛压沉重的股票绝不能出现在推荐里；\
+         2) 避开 ST、退市风险股；\
+         3) 你无法获取实时行情，禁止编造具体的当日涨跌幅、现价等数字，\
+            分析基于公司基本面、行业景气度与中期技术格局。\
          严格只输出 JSON 数组，共 3 个元素：\
          [{{\"code\":\"sh600519 或 sz000001 这种格式\",\"name\":\"股票名称\",\
-         \"score\":-100到100的整数（看涨强度）,\
-         \"reason\":\"不少于150字的详尽分析：基本面/技术面/消息面依据 + 风险提示\"}}]"
+         \"score\":1到100的整数（看涨信心，越高越看涨，不允许负数）,\
+         \"reason\":\"150~250字的详尽分析：基本面/行业/技术格局依据 + 风险提示\"}}]"
     );
     let messages = vec![
         serde_json::json!({ "role": "system", "content": "你是严谨的股票分析助手。只输出 JSON 数组，不输出任何其他文字。推荐仅供参考，不构成投资建议。" }),
@@ -217,15 +221,20 @@ async fn ai_recommend(
         if !(code.len() == 8 && (code.starts_with("sh") || code.starts_with("sz"))) {
             continue; // 格式不合法的丢弃
         }
+        // 推荐里只收看涨标的：AI 若违规给出 0/负分（看跌），直接丢弃
+        let score = item["score"].as_i64().unwrap_or(0);
+        if score <= 0 {
+            continue;
+        }
         out.push(RecStock {
             code,
             name: item["name"].as_str().unwrap_or("").to_string(),
-            score: item["score"].as_i64().unwrap_or(0).clamp(-100, 100) as i32,
+            score: score.clamp(1, 100) as i32,
             reason: item["reason"].as_str().unwrap_or("").to_string(),
         });
     }
     if out.is_empty() {
-        return Err("AI 没有返回合法的推荐结果，请重试".into());
+        return Err("AI 未返回符合要求的看涨推荐，请点「重新生成」".into());
     }
     Ok(out)
 }
