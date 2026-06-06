@@ -78,22 +78,30 @@ cd rust-stock/src-tauri && cargo test
 
 ## 配置 AI（可选）
 
-设置页填入 [DeepSeek API Key](https://platform.deepseek.com)（用户自带，本地直连，key 只存在你本机的 SQLite 里）。填入后自动启用：自选股 AI 打分、情绪 AI 解读、AI 聊天。不填这些功能会优雅降级并提示。
+设置页填入 API Key（默认 [DeepSeek](https://platform.deepseek.com)；Base URL / 模型可改成任意 OpenAI 兼容服务，如 Kimi、通义、本地 Ollama）。key 只存你本机 SQLite，本地直连。填入后自动启用：自选股 AI 打分、情绪 AI 解读、AI 聊天；不填则优雅降级并提示。
 
 ## 工程结构
 
 ```
 rust-stock/
-├── src/                   # 前端（原生 HTML/CSS/JS，无框架）
-│   ├── index.html         # 全部 UI（样式内联）
-│   └── main.js            # 渲染 + Tauri 桥接 + mock 回退
-├── src-tauri/             # Rust 本地逻辑层
-│   ├── src/lib.rs         # 窗口控制 + Tauri 命令 + DeepSeek（流式/打分/解读）
-│   ├── src/quote.rs       # 行情抓取与解析（新浪 GBK / 东财 JSON，含单测）
-│   ├── src/feed.rs        # 快讯 + 情绪算法（含单测）
-│   ├── src/storage.rs     # SQLite KV 持久化（含单测）
-│   └── tauri.conf.json    # 窗口/打包配置
-└── docs/                  # 开发文档 / 项目记忆 / 避坑记录
+├── src/                       # 前端（原生 HTML/CSS/JS + ES modules，无框架无构建）
+│   ├── index.html             # 全部 UI（样式内联）
+│   ├── main.js                # 入口 bootstrap（接线/定时器）
+│   └── js/
+│       ├── bridge.js          # Tauri 桥接（浏览器预览降级）
+│       ├── store.js           # 全局状态 + SQLite/localStorage 持久化
+│       ├── api.js             # Tauri 命令封装
+│       ├── ui.js / router.js  # 通用件 / 页面切换
+│       └── pages/             # 行情 / 快讯 / 自选 / 聊天 / 设置
+├── src-tauri/                 # Rust 本地逻辑层
+│   ├── src/lib.rs             # Tauri 命令层（业务 prompt / 窗口控制）
+│   ├── src/sources/           # 行情数据源抽象（QuoteSource trait + 注册表）★新增源在此加一行
+│   ├── src/ai.rs              # AI Provider 抽象（OpenAI 兼容协议，base_url/model 可配）
+│   ├── src/quote.rs           # 行情模型与解析器（含单测）
+│   ├── src/feed.rs            # 快讯 + 情绪算法（含单测）
+│   ├── src/storage.rs         # SQLite KV 持久化（含单测）
+│   └── tauri.conf.json        # 窗口/打包配置
+└── docs/                      # 开发文档 / 项目记忆 / 避坑记录
 ```
 
 更多细节：[开发文档](rust-stock/docs/DEVELOPMENT.md) · [项目记忆](rust-stock/docs/MEMORY.md) · [避坑记录](rust-stock/docs/PITFALLS.md)
@@ -101,9 +109,9 @@ rust-stock/
 ## Roadmap
 
 - [ ] 板块热力接真实数据（当前为演示数据）
-- [ ] 数据源抽象为 trait，新增数据源即插即用
-- [ ] 前端模块化拆分 + 构建流程
-- [ ] GitHub Actions CI（cargo test + 跨平台构建）
+- [x] 数据源抽象为 trait，新增数据源即插即用（`sources/` 注册表）
+- [x] 前端模块化拆分（原生 ES modules，无构建依赖）
+- [x] GitHub Actions CI（cargo test + 前端语法检查）
 - [ ] 系统托盘、记住窗口位置
 - [ ] K 线图、个股详情页
 
