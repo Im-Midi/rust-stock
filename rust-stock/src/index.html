@@ -180,6 +180,8 @@
     cursor: default;
   }
   .feed-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .feed-item.has-link { cursor: pointer; border-radius: 6px; transition: background .15s; }
+  .feed-item.has-link:hover { background: var(--surface-2); }
   .feed-item:first-child { padding-top: 0; }
   .feed-time {
     font-family: 'DM Mono', monospace;

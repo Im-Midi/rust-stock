@@ -2,7 +2,7 @@
 import { INDEX_CODES, fetchQuotes, fetchSentiment, explainSentiment, fetchStockNews } from '../api.js';
 import { state, today, aiReady } from '../store.js';
 import { nowHMS, flashHint } from '../ui.js';
-import { inTauri } from '../bridge.js';
+import { inTauri, invoke } from '../bridge.js';
 
 const mockIndices = [
   { name: '上证指数', val: '4095.45', chg: '-0.81%', up: false },
@@ -138,10 +138,18 @@ async function openSentWhy() {
 
 // ---------- 自选股信息：抓取与自选相关的最新快讯 ----------
 const mockWatchNews = [
-  { time: '11:40', txt: '（预览示例）贵州茅台获机构密集调研，渠道反馈动销回暖', tag: '', stocks: [] },
-  { time: '10:36', txt: '（预览示例）宁德时代中标海外大型储能项目', tag: '要闻', stocks: [] },
+  { time: '2026-06-06 11:40:00', txt: '（预览示例）贵州茅台获机构密集调研，渠道反馈动销回暖', tag: '贵州茅台', stocks: [], url: '' },
+  { time: '2026-06-03 10:36:00', txt: '（预览示例）宁德时代中标海外大型储能项目', tag: '宁德时代', stocks: [], url: '' },
 ];
 let watchNews = null;
+
+// "YYYY-MM-DD HH:MM:SS" → 当天显示 HH:MM，往日显示 MM-DD
+function fmtNewsTime(s) {
+  if (!s || s.length < 16) return s || '';
+  const now = new Date();
+  const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return s.slice(0, 10) === localToday ? s.slice(11, 16) : s.slice(5, 10);
+}
 
 export async function loadWatchNews() {
   if (!inTauri) { watchNews = mockWatchNews; return; }
@@ -165,17 +173,29 @@ export function renderWatchNews() {
     return;
   }
   meta.textContent = `相关 ${list.length} 条`;
-  el.innerHTML = list.map(n => `
-    <div class="feed-item">
-      <span class="feed-time">${n.time}</span>
+  el.innerHTML = list.map((n, i) => `
+    <div class="feed-item${n.url ? ' has-link' : ''}" data-i="${i}" title="${n.url ? '点击打开原文' : ''}">
+      <span class="feed-time">${fmtNewsTime(n.time)}</span>
       <div class="feed-body">
         <div class="feed-txt">${n.txt}</div>
-        ${n.tag ? `<div class="feed-tags"><span class="tag bull">${n.tag}</span></div>` : ''}
+        ${n.tag ? `<div class="feed-tags"><span class="tag neutral">${n.tag}</span></div>` : ''}
       </div>
     </div>`).join('');
 }
 
+// 点击条目用系统浏览器打开原文
+function openWatchNews(i) {
+  const n = (watchNews || [])[i];
+  if (!n || !n.url) return;
+  if (inTauri) invoke('plugin:shell|open', { path: n.url }).catch(e => console.warn('打开失败:', e));
+  else window.open(n.url, '_blank');
+}
+
 export function initMarket() {
+  document.getElementById('feed').addEventListener('click', (e) => {
+    const row = e.target.closest('.feed-item');
+    if (row && row.dataset.i != null) openWatchNews(+row.dataset.i);
+  });
   document.getElementById('sentFront').addEventListener('click', openSentWhy);
   document.getElementById('sentBackBtn').addEventListener('click', (e) => {
     e.stopPropagation();

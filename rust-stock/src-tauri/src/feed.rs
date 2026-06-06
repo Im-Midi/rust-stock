@@ -21,6 +21,8 @@ pub struct NewsItem {
     pub tag: String,            // 栏目标签（可空）
     #[serde(default)]
     pub stocks: Vec<String>,    // 关联标的 secid（东财 stockList，如 "1.601186"）
+    #[serde(default)]
+    pub url: String,            // 原文链接（个股资讯有，7×24 快讯为空）
 }
 
 /// 解析东方财富 7×24 快讯 JSON
@@ -65,7 +67,35 @@ pub fn parse_em_news(body: &str) -> Vec<NewsItem> {
                 .as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
-            Some(NewsItem { time, txt, tag, stocks })
+            Some(NewsItem { time, txt, tag, stocks, url: String::new() })
+        })
+        .collect()
+}
+
+/// 解析东财个股资讯（np-listapi getListInfo，2026-06-06 实测）
+/// {"code":1,"data":{"list":[{"Art_ShowTime":"2026-06-05 21:19:00","Art_Title":"…","Art_Url":"http://…"}]}}
+pub fn parse_stock_news(body: &str, stock_name: &str, secid: &str) -> Vec<NewsItem> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let list = match v["data"]["list"].as_array() {
+        Some(l) => l,
+        None => return vec![],
+    };
+    list.iter()
+        .filter_map(|a| {
+            let txt = a["Art_Title"].as_str()?.trim().to_string();
+            if txt.is_empty() {
+                return None;
+            }
+            Some(NewsItem {
+                time: a["Art_ShowTime"].as_str().unwrap_or("").to_string(), // 完整 "YYYY-MM-DD HH:MM:SS"，前端按需格式化
+                txt,
+                tag: stock_name.to_string(), // 用股票名做标签，卡片里能看出属于哪支
+                stocks: vec![secid.to_string()],
+                url: a["Art_Url"].as_str().unwrap_or("").to_string(),
+            })
         })
         .collect()
 }
@@ -87,24 +117,57 @@ pub async fn fetch_news() -> Result<Vec<NewsItem>, String> {
     fetch_news_n(20).await
 }
 
-/// 自选股相关快讯：拉近 200 条 7×24，按 secid/股票名过滤
+/// 自选股相关资讯：对每支自选并发拉东财个股新闻（每支 6 条），合并按时间倒序取 20。
+/// 任何股票都有历史资讯，这比"过滤实时 7×24 流"覆盖广得多。
 #[cfg(feature = "net")]
 pub async fn fetch_stock_news(codes: &[String]) -> Result<Vec<NewsItem>, String> {
     if codes.is_empty() {
         return Ok(vec![]);
     }
-    // 行情拿名称（同时校验代码有效），失败不阻塞——退化为只按 secid 匹配
-    let names: Vec<String> = match crate::sources::get("eastmoney") {
-        Some(src) => src
-            .fetch(codes)
-            .await
-            .map(|qs| qs.into_iter().map(|q| q.name).collect())
-            .unwrap_or_default(),
+    // 行情拿股票名做标签；失败不阻塞
+    let quotes = match crate::sources::get("eastmoney") {
+        Some(src) => src.fetch(codes).await.unwrap_or_default(),
         None => vec![],
     };
-    let secids: Vec<String> = codes.iter().filter_map(|c| crate::sources::to_secid(c)).collect();
-    let all = fetch_news_n(200).await?;
-    Ok(filter_for_stocks(all, &secids, &names))
+    let name_of = |code: &str| {
+        quotes
+            .iter()
+            .find(|q| !q.code.is_empty() && code.ends_with(&q.code))
+            .map(|q| q.name.clone())
+            .unwrap_or_default()
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let client = reqwest::Client::new();
+
+    let mut futs = Vec::new();
+    for code in codes.iter().take(10) {
+        let Some(secid) = crate::sources::to_secid(code) else { continue };
+        let name = name_of(code);
+        let url = format!(
+            "https://np-listapi.eastmoney.com/comm/web/getListInfo?client=web&mTypeAndCode={secid}&type=1&pageSize=6&req_trace={ts}"
+        );
+        let client = client.clone();
+        futs.push(async move {
+            let resp = client
+                .get(&url)
+                .header("Referer", "https://quote.eastmoney.com/")
+                .send()
+                .await
+                .ok()?;
+            let text = resp.text().await.ok()?;
+            Some(parse_stock_news(&text, &name, &secid))
+        });
+    }
+    let results = futures_util::future::join_all(futs).await;
+    let mut all: Vec<NewsItem> = results.into_iter().flatten().flatten().collect();
+    // 按时间倒序，同标题去重（同一篇文章可能同时关联多支自选）
+    all.sort_by(|a, b| b.time.cmp(&a.time));
+    all.dedup_by(|a, b| a.txt == b.txt);
+    all.truncate(20);
+    Ok(all)
 }
 
 #[cfg(feature = "net")]
@@ -224,12 +287,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_stock_news() {
+        // 按 2026-06-06 实测返回的真实形状
+        let raw = r#"{"code":1,"message":"success","data":{"page_index":1,"list":[
+            {"Art_ShowTime":"2026-06-05 21:19:00","Art_Code":"x1","Art_Title":"贵州茅台大宗交易成交0.30万股","Art_Url":"http://finance.eastmoney.com/a/x1.html"},
+            {"Art_ShowTime":"2026-06-05 21:03:15","Art_Code":"x2","Art_Title":"","Art_Url":"http://x2"},
+            {"Art_ShowTime":"2026-06-06 13:06:08","Art_Code":"x3","Art_Title":"四大消费黄金赛道配置性价比凸显","Art_Url":"http://x3"}
+        ]}}"#;
+        let items = parse_stock_news(raw, "贵州茅台", "1.600519");
+        assert_eq!(items.len(), 2); // 空标题被过滤
+        assert_eq!(items[0].tag, "贵州茅台");
+        assert_eq!(items[0].stocks, vec!["1.600519".to_string()]);
+        assert!(items[0].url.starts_with("http"));
+        assert_eq!(items[0].time, "2026-06-05 21:19:00");
+        assert_eq!(parse_stock_news("not json", "x", "1.1").len(), 0);
+    }
+
+    #[test]
     fn test_filter_for_stocks() {
         let mk = |txt: &str, stocks: Vec<&str>| NewsItem {
             time: "10:00".into(),
             txt: txt.into(),
             tag: String::new(),
             stocks: stocks.into_iter().map(|s| s.to_string()).collect(),
+            url: String::new(),
         };
         let items = vec![
             mk("某公司中标大单", vec!["1.601186"]),         // secid 命中
