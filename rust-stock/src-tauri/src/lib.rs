@@ -8,6 +8,7 @@
 
 mod ai;
 mod feed;
+mod kline;
 mod quote;
 mod sources;
 mod storage;
@@ -45,6 +46,17 @@ async fn fetch_news() -> Result<Vec<feed::NewsItem>, String> {
 #[tauri::command]
 async fn fetch_sentiment() -> Result<feed::Sentiment, String> {
     feed::fetch_sentiment().await
+}
+
+/// 历史K线。period: "day" | "week" | "month"
+#[tauri::command]
+async fn fetch_kline(code: String, period: String, count: u32) -> Result<Vec<kline::Candle>, String> {
+    let klt = match period.as_str() {
+        "week" => 102,
+        "month" => 103,
+        _ => 101,
+    };
+    kline::fetch_kline(&code, klt, count.clamp(20, 300)).await
 }
 
 // ============================================================
@@ -160,6 +172,64 @@ async fn explain_sentiment(
     ai::chat_once(&cfg, messages, 0.4).await
 }
 
+/// 今日 AI 推荐：详尽分析后推荐 3 支
+#[derive(serde::Serialize)]
+pub struct RecStock {
+    pub code: String,
+    pub name: String,
+    pub score: i32,
+    pub reason: String,
+}
+
+#[tauri::command]
+async fn ai_recommend(
+    key: String,
+    base_url: Option<String>,
+    model: Option<String>,
+    context: String, // 前端拼好的盘面背景（日期/情绪/指数）
+) -> Result<Vec<RecStock>, String> {
+    let cfg = ai::AiConfig::new(key, base_url, model)?;
+    let prompt = format!(
+        "{context}。你是严谨的A股分析师，请经过详尽的基本面、技术面、消息面综合分析后，\
+         推荐 3 支未来一周值得关注的A股股票（避开 ST、退市风险股）。\
+         严格只输出 JSON 数组，共 3 个元素：\
+         [{{\"code\":\"sh600519 或 sz000001 这种格式\",\"name\":\"股票名称\",\
+         \"score\":-100到100的整数（看涨强度）,\
+         \"reason\":\"不少于150字的详尽分析：基本面/技术面/消息面依据 + 风险提示\"}}]"
+    );
+    let messages = vec![
+        serde_json::json!({ "role": "system", "content": "你是严谨的股票分析助手。只输出 JSON 数组，不输出任何其他文字。推荐仅供参考，不构成投资建议。" }),
+        serde_json::json!({ "role": "user", "content": prompt }),
+    ];
+    let content = ai::chat_once(&cfg, messages, 0.5).await?;
+    let arr = ai::extract_json_array(&content)?;
+    let list = arr.as_array().ok_or("AI 返回的不是数组")?;
+    let mut out = Vec::new();
+    for item in list.iter().take(3) {
+        let raw_code = item["code"].as_str().unwrap_or("").trim().to_lowercase();
+        // 容错：AI 可能只回 6 位数字
+        let code = if raw_code.len() == 6 && raw_code.chars().all(|c| c.is_ascii_digit()) {
+            let prefix = if raw_code.starts_with('6') || raw_code.starts_with('5') || raw_code.starts_with('9') { "sh" } else { "sz" };
+            format!("{prefix}{raw_code}")
+        } else {
+            raw_code
+        };
+        if !(code.len() == 8 && (code.starts_with("sh") || code.starts_with("sz"))) {
+            continue; // 格式不合法的丢弃
+        }
+        out.push(RecStock {
+            code,
+            name: item["name"].as_str().unwrap_or("").to_string(),
+            score: item["score"].as_i64().unwrap_or(0).clamp(-100, 100) as i32,
+            reason: item["reason"].as_str().unwrap_or("").to_string(),
+        });
+    }
+    if out.is_empty() {
+        return Err("AI 没有返回合法的推荐结果，请重试".into());
+    }
+    Ok(out)
+}
+
 // ============================================================
 // 窗口控制
 // ============================================================
@@ -211,6 +281,38 @@ fn toggle_dock_edge(window: WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(new_x, pos.y));
 }
 
+/// 保存窗口位置与大小（节流 400ms，关闭时强制保存）
+fn save_win_state(window: &WebviewWindow) {
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) else { return };
+    let db = window.app_handle().state::<storage::Db>();
+    let json = format!(
+        "{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}",
+        pos.x, pos.y, size.width, size.height
+    );
+    let _ = storage::kv_set(&db, "win_state", &json);
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 启动时恢复上次的窗口位置与大小
+fn restore_win_state(window: &WebviewWindow, db: &storage::Db) {
+    let Ok(Some(s)) = storage::kv_get(db, "win_state") else { return };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else { return };
+    if let (Some(w), Some(h)) = (v["w"].as_u64(), v["h"].as_u64()) {
+        if w >= 200 && h >= 300 {
+            let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+        }
+    }
+    if let (Some(x), Some(y)) = (v["x"].as_i64(), v["y"].as_i64()) {
+        let _ = window.set_position(PhysicalPosition::new(x as i32, y as i32));
+    }
+}
+
 /// 拖拽结束时自动吸附检测
 fn snap_to_edge(window: &WebviewWindow) {
     let monitor = match window.current_monitor() {
@@ -248,6 +350,10 @@ fn snap_to_edge(window: &WebviewWindow) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             set_always_on_top,
             minimize_window,
@@ -259,6 +365,8 @@ pub fn run() {
             list_sources,
             fetch_news,
             fetch_sentiment,
+            fetch_kline,
+            ai_recommend,
             db_get,
             db_set
         ])
@@ -266,17 +374,38 @@ pub fn run() {
             // SQLite：放 app data 目录，随系统用户走
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
             let db = storage::init_db(data_dir).expect("初始化 SQLite 失败");
-            app.manage(db);
 
             let win = app.get_webview_window("main").unwrap();
             let _ = win.set_always_on_top(true);
 
-            // 监听窗口移动，松手后吸附（生产可加防抖）
+            // 恢复上次窗口位置/大小（在 manage 之前用本地引用读）
+            restore_win_state(&win, &db);
+            app.manage(db);
+
+            // 监听窗口事件：移动后吸附 + 节流保存位置大小，关闭时强制保存
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static LAST_SAVE: AtomicU64 = AtomicU64::new(0);
             let win_clone = win.clone();
-            win.on_window_event(move |event| {
-                if let tauri::WindowEvent::Moved(_) = event {
+            win.on_window_event(move |event| match event {
+                tauri::WindowEvent::Moved(_) => {
                     snap_to_edge(&win_clone);
+                    let now = now_ms();
+                    if now.saturating_sub(LAST_SAVE.load(Ordering::Relaxed)) > 400 {
+                        LAST_SAVE.store(now, Ordering::Relaxed);
+                        save_win_state(&win_clone);
+                    }
                 }
+                tauri::WindowEvent::Resized(_) => {
+                    let now = now_ms();
+                    if now.saturating_sub(LAST_SAVE.load(Ordering::Relaxed)) > 400 {
+                        LAST_SAVE.store(now, Ordering::Relaxed);
+                        save_win_state(&win_clone);
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    save_win_state(&win_clone);
+                }
+                _ => {}
             });
             Ok(())
         })
