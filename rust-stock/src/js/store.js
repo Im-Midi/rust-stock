@@ -35,6 +35,14 @@ export async function loadAll() {
   state.watchlist = await storeGet('watchlist', []);
   state.aiCache = await storeGet('ai_cache', {});
   state.recHistory = await storeGet('rec_history', {});
+  // 迁移回写：老版本数据只在 localStorage，统一补进 SQLite，
+  // 让挂件等其他窗口（共享 SQLite）也能读到
+  if (inTauri) {
+    storeSet('settings', state.settings);
+    storeSet('watchlist', state.watchlist);
+    storeSet('ai_cache', state.aiCache);
+    storeSet('rec_history', state.recHistory);
+  }
 }
 
 export function saveSettings(s) { state.settings = s; storeSet('settings', s); }

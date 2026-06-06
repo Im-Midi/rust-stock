@@ -27,7 +27,7 @@ function initWindowControls() {
     e.currentTarget.style.color = pinned ? 'var(--accent)' : 'var(--txt-2)';
     await invoke('set_always_on_top', { pinned });
   });
-  // 最小化 = 缩为屏幕底部的嵌入式滚动横幅（只滚自选股，点横幅还原）
+  // 最小化 = 缩为屏幕右缘的竖排仪表盘挂件（每支自选一个表盘，点挂件还原）
   document.getElementById('minBtn').addEventListener('click', () => invoke('show_band'));
   // 关闭按钮 = 吸附收起到屏幕边缘（而非真正退出）
   document.getElementById('closeBtn').addEventListener('click', () => invoke('toggle_dock_edge'));

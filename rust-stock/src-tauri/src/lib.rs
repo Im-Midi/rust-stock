@@ -244,24 +244,42 @@ fn minimize_window(window: WebviewWindow) {
     let _ = window.minimize();
 }
 
-/// 缩小为屏幕底部的嵌入式滚动横幅：隐藏主窗，band 窗贴工作区底边全宽显示
+const BAND_W: f64 = 86.0; // 挂件逻辑宽度
+
+/// 缩小为屏幕右缘的竖排仪表盘挂件：隐藏主窗，band 窗贴右边显示。
+/// 挂件顶部有拖把手，用户可自行拖到任意位置。
 #[tauri::command]
 fn show_band(window: WebviewWindow) {
     let app = window.app_handle();
     let Some(band) = app.get_webview_window("band") else { return };
-    if let Ok(Some(mon)) = window.current_monitor() {
-        let wa = mon.work_area(); // 工作区 = 屏幕减去任务栏，横幅正好"嵌"在任务栏上沿
-        let scale = mon.scale_factor();
-        let h = (34.0 * scale) as u32;
-        let _ = band.set_size(PhysicalSize::new(wa.size.width, h));
-        let _ = band.set_position(PhysicalPosition::new(
-            wa.position.x,
-            wa.position.y + wa.size.height as i32 - h as i32,
-        ));
+    // 已经显示过且被用户拖过 → 保持原位，只重新显示
+    let first_show = !band.is_visible().unwrap_or(false);
+    if first_show {
+        if let Ok(Some(mon)) = window.current_monitor() {
+            let wa = mon.work_area();
+            let scale = mon.scale_factor();
+            let w = (BAND_W * scale) as u32;
+            let h = (320.0 * scale) as u32;
+            let _ = band.set_size(PhysicalSize::new(w, h));
+            let _ = band.set_position(PhysicalPosition::new(
+                wa.position.x + wa.size.width as i32 - w as i32 - (8.0 * scale) as i32,
+                wa.position.y + (wa.size.height as i32 - h as i32) / 2,
+            ));
+        }
     }
     let _ = band.show();
     let _ = band.set_always_on_top(true);
     let _ = window.hide();
+}
+
+/// 挂件按自选数量自适应高度（band 前端渲染完调用，逻辑像素）
+#[tauri::command]
+fn resize_band(window: WebviewWindow, height: f64) {
+    let Ok(Some(mon)) = window.current_monitor() else { return };
+    let scale = mon.scale_factor();
+    let w = (BAND_W * scale) as u32;
+    let h = (height.clamp(70.0, 720.0) * scale) as u32;
+    let _ = window.set_size(PhysicalSize::new(w, h));
 }
 
 /// 从横幅点击还原主窗
@@ -434,6 +452,7 @@ pub fn run() {
             set_always_on_top,
             minimize_window,
             show_band,
+            resize_band,
             restore_main,
             ask_ai,
             analyze_stock,

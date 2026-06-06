@@ -2,50 +2,74 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<title>rust-stock band</title>
+<title>rust-stock 挂件</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-  .band {
+  .panel {
     width: 100%; height: 100%;
-    background: rgba(10, 12, 16, .93);
-    border-top: 1px solid #242a36;
-    display: flex; align-items: center;
+    background: rgba(10, 12, 16, .94);
+    border: 1px solid #242a36;
+    border-radius: 14px;
     overflow: hidden;
-    cursor: pointer;
+    display: flex; flex-direction: column;
     font-family: 'Sora', system-ui, sans-serif;
-    -webkit-mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 20px), transparent);
   }
-  .logo {
+  /* 顶部拖把手：拖这里移动挂件 */
+  .grip {
     flex-shrink: 0;
-    width: 20px; height: 20px; border-radius: 6px;
-    margin: 0 10px;
+    height: 26px;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    cursor: grab;
+    background: #12151c;
+    border-bottom: 1px solid #1a1f29;
+  }
+  .grip:active { cursor: grabbing; }
+  .grip .dot {
+    width: 16px; height: 16px; border-radius: 5px;
     background: linear-gradient(135deg, #4d8dff, #7b5cff);
     display: grid; place-items: center;
-    color: #fff; font-size: 11px; font-weight: 700;
+    color: #fff; font-size: 9px; font-weight: 700;
   }
-  .track-wrap { flex: 1; overflow: hidden; height: 100%; display: flex; align-items: center; }
-  .track {
-    display: flex; gap: 26px;
-    white-space: nowrap;
-    padding-left: 8px;
-    animation: scroll 28s linear infinite;
+  .grip .lines { color: #5c6470; font-size: 10px; letter-spacing: 2px; }
+  .list { flex: 1; overflow: hidden; padding: 2px 0; }
+  .bs {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 6px 4px 7px;
+    border-bottom: 1px solid #1a1f29;
+    cursor: pointer;
+    transition: background .15s;
   }
-  .band:hover .track { animation-play-state: paused; }
-  @keyframes scroll { to { transform: translateX(-50%); } }
-  .it { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; }
-  .it .n { color: #9aa4b2; }
-  .it .v { font-family: 'DM Mono', Consolas, monospace; font-weight: 500; }
-  .it .c { font-family: 'DM Mono', Consolas, monospace; font-size: 11px; }
-  .up { color: #ff4d4f; }
-  .down { color: #14c87d; }
-  .hint { color: #5c6470; font-size: 12px; padding-left: 8px; }
+  .bs:last-child { border-bottom: none; }
+  .bs:hover { background: #181c25; }
+  .bs svg { width: 46px; height: 29px; }
+  .bn {
+    font-size: 10px; color: #e8ecf2; font-weight: 600;
+    max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-top: 1px;
+  }
+  .bp { font-size: 9.5px; font-family: 'DM Mono', Consolas, monospace; margin-top: 1px; }
+  .up { color: #ff4d4f; } .down { color: #14c87d; }
+  .empty { font-size: 10px; color: #5c6470; text-align: center; padding: 16px 6px; line-height: 1.6; }
+  .more { font-size: 9px; color: #5c6470; text-align: center; padding: 4px 0 6px; }
 </style>
 </head>
 <body>
-  <div class="band" id="band" title="点击返回 rust-stock 主窗口">
-    <div class="logo">R</div>
-    <div class="track-wrap"><div class="track" id="track"><span class="hint">加载自选股…</span></div></div>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="ggm" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#14c87d"/>
+        <stop offset="0.5" stop-color="#f5a623"/>
+        <stop offset="1" stop-color="#ff4d4f"/>
+      </linearGradient>
+    </defs>
+  </svg>
+  <div class="panel">
+    <div class="grip" data-tauri-drag-region title="拖动移动 · 双击返回主窗">
+      <div class="dot" data-tauri-drag-region>R</div>
+      <span class="lines" data-tauri-drag-region>⋮⋮</span>
+    </div>
+    <div class="list" id="list"><div class="empty">加载中…</div></div>
   </div>
   <script type="module" src="./js/band.js"></script>
 </body>
