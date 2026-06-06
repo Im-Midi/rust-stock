@@ -270,6 +270,8 @@ fn restore_main(window: WebviewWindow) {
     let app = window.app_handle();
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
+        let _ = main.unminimize();
+        clamp_to_workarea(&main); // 防止还原到屏外位置（看起来像"点了没反应"）
         let _ = main.set_focus();
     }
     let _ = window.hide(); // band 自己藏起来
@@ -313,8 +315,16 @@ fn toggle_dock_edge(window: WebviewWindow) {
 }
 
 /// 保存窗口位置与大小（节流 400ms，关闭时强制保存）
+/// 注意：隐藏中的窗口（横幅模式）不能保存——Windows 给隐藏/最小化窗口
+/// 返回 -32000 占位坐标，存进去后下次启动窗口会被"恢复"到屏幕外。
 fn save_win_state(window: &WebviewWindow) {
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
     let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) else { return };
+    if pos.x <= -30000 || pos.y <= -30000 {
+        return; // Windows 隐藏窗口占位坐标
+    }
     let db = window.app_handle().state::<storage::Db>();
     let json = format!(
         "{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}",
@@ -328,6 +338,41 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 把窗口位置夹回工作区可视范围（防止恢复到屏外/收起位导致"窗口消失"）
+fn clamp_to_workarea(window: &WebviewWindow) {
+    let mon = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(mon) = mon else { return };
+    let wa = mon.work_area();
+    let pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
+    let size = window.outer_size().unwrap_or(PhysicalSize::new(360, 640));
+
+    let min_vis = 120; // 至少露出这么多像素可供拖拽
+    let mut x = pos.x;
+    let mut y = pos.y;
+
+    // 离谱值（-32000 占位坐标等）直接回右上安全位
+    if pos.x <= -30000 || pos.y <= -30000 {
+        x = wa.position.x + wa.size.width as i32 - size.width as i32 - 24;
+        y = wa.position.y + 80;
+    } else {
+        let max_x = wa.position.x + wa.size.width as i32 - min_vis;
+        let min_x = wa.position.x - size.width as i32 + min_vis;
+        if x > max_x { x = max_x; }
+        if x < min_x { x = wa.position.x + 24; }
+        let max_y = wa.position.y + wa.size.height as i32 - min_vis;
+        if y > max_y { y = max_y; }
+        if y < wa.position.y { y = wa.position.y; }
+    }
+
+    if x != pos.x || y != pos.y {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
 }
 
 /// 启动时恢复上次的窗口位置与大小
@@ -411,8 +456,9 @@ pub fn run() {
             let win = app.get_webview_window("main").unwrap();
             let _ = win.set_always_on_top(true);
 
-            // 恢复上次窗口位置/大小（在 manage 之前用本地引用读）
+            // 恢复上次窗口位置/大小（在 manage 之前用本地引用读），并夹回可视区
             restore_win_state(&win, &db);
+            clamp_to_workarea(&win);
             app.manage(db);
 
             // 监听窗口事件：移动后吸附 + 节流保存位置大小，关闭时强制保存
