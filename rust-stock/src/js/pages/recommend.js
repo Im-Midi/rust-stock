@@ -1,7 +1,7 @@
 // pages/recommend.js — 今日 AI 推荐：详尽分析后推荐 3 支
 // 历史按日存 SQLite（rec_history），连续 ≥7 个推荐日出现同一支 → ★ 标识并注明天数
 import { aiRecommend } from '../api.js';
-import { state, saveRecHistory, today, aiReady } from '../store.js';
+import { state, saveRecHistory, saveWatch, today, aiReady } from '../store.js';
 import { flashHint } from '../ui.js';
 import { inTauri } from '../bridge.js';
 import { showAnalysis } from './analysis.js';
@@ -83,6 +83,7 @@ export function renderRecommend() {
     const streak = inTauri ? streakOf(r.code) : (i === 0 ? 8 : 1); // 预览演示星标
     const starred = streak >= 7;
     const up = r.score >= 0;
+    const inWl = state.watchlist.includes(r.code);
     return `<div class="rec-row" data-i="${i}">
       <div class="r-rank">${i + 1}</div>
       <div class="r-name">
@@ -90,13 +91,28 @@ export function renderRecommend() {
         <i>${r.code.toUpperCase()}</i>
       </div>
       <div class="r-score ${up ? 'up-c' : 'down-c'}">${up ? '+' : ''}${r.score}</div>
+      <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
   note.textContent = 'AI 生成，按日缓存。★ = 连续一周（≥7 个推荐日）推荐同一支。仅供参考，不构成投资建议。';
 }
 
+function addToWatch(i) {
+  const recs = inTauri ? state.recHistory[today()] : mockRecs;
+  const r = recs && recs[i];
+  if (!r) return;
+  if (state.watchlist.includes(r.code)) { flashHint('已在自选里了'); return; }
+  state.watchlist.push(r.code);
+  saveWatch();
+  flashHint(`已加入自选：${r.name}`);
+  renderRecommend(); // 按钮变 ✓
+}
+
 export function initRecommend() {
   document.getElementById('recList').addEventListener('click', (e) => {
+    // 一键加自选（在行点击之前拦截）
+    const addBtn = e.target.closest('.rec-add');
+    if (addBtn) { addToWatch(+addBtn.dataset.add); return; }
     const row = e.target.closest('.rec-row');
     if (!row) return;
     const tk = today();
