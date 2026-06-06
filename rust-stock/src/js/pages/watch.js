@@ -1,11 +1,17 @@
-// pages/watch.js — 自选股：增删、行情刷新、AI 看涨/看跌小仪表盘、分析详情页
+// pages/watch.js — 自选股：增删、行情刷新、AI 小仪表盘、K线/分析入口
+// 加载策略：缓存先行（立即渲染上次行情/占位），网络刷新到达后无感重绘。
 import { fetchQuotes, normalizeCode, analyzeStock } from '../api.js';
-import { state, saveWatch, saveAiCache, today, aiReady } from '../store.js';
+import { state, saveWatch, saveAiCache, storeGet, storeSet, today, aiReady } from '../store.js';
 import { flashHint } from '../ui.js';
 import { currentPage } from '../router.js';
 import { inTauri } from '../bridge.js';
 import { showAnalysis } from './analysis.js';
 import { showKline } from './kline.js';
+
+let cacheMap = {};      // code → 最近一次行情
+let lastNames = {};     // code → 名称（K线页标题用）
+let cacheLoaded = false;
+let fetching = false;
 
 // 浏览器预览用的稳定假行情
 function mockQuote(code) {
@@ -27,7 +33,7 @@ async function ensureAnalysis(code, q) {
     if (res && typeof res.score === 'number') {
       state.aiCache[code] = { score: res.score, analysis: res.analysis, name: q.name, day: today() };
       saveAiCache();
-      if (currentPage() === 'watch') renderWatch(); // 指针归位
+      if (currentPage() === 'watch') paint(); // 指针归位
     }
   } catch (e) {
     console.warn('AI 分析失败:', code, e);
@@ -55,7 +61,8 @@ function miniGauge(code, i) {
   </svg>`;
 }
 
-export async function renderWatch() {
+// 只画界面，不发网络请求——永远瞬时
+function paint() {
   const list = document.getElementById('watchList');
   const empty = document.getElementById('watchEmpty');
   const wl = state.watchlist;
@@ -63,25 +70,57 @@ export async function renderWatch() {
   empty.style.display = wl.length ? 'none' : 'block';
   if (!wl.length) { list.innerHTML = ''; return; }
 
-  let quotes = await fetchQuotes(wl);
-  if (!quotes) quotes = wl.map(mockQuote);
-  quotes.forEach((q, i) => { lastNames[wl[i]] = q.name; });
-
-  list.innerHTML = quotes.map((q, i) => {
-    const up = q.change_pct >= 0;
+  list.innerHTML = wl.map((code, i) => {
+    if (!inTauri && !cacheMap[code]) cacheMap[code] = mockQuote(code); // 预览
+    const q = cacheMap[code];
+    const pending = !q;
+    const name = q ? q.name : (lastNames[code] || code.toUpperCase());
+    const up = q ? q.change_pct >= 0 : true;
     return `<div class="watch-row">
-      <div class="w-name"><b>${q.name}</b><i>${(wl[i] || '').toUpperCase()}</i></div>
-      ${miniGauge(wl[i], i)}
-      <div class="w-quote ${up ? 'up-c' : 'down-c'}">
-        <b>${q.price.toFixed(2)}</b>
-        <i>${up ? '+' : ''}${q.change_pct.toFixed(2)}%</i>
+      <div class="w-name"><b>${name}</b><i>${code.toUpperCase()}</i></div>
+      ${miniGauge(code, i)}
+      <div class="w-quote ${pending ? 'pending' : (up ? 'up-c' : 'down-c')}">
+        <b>${pending ? '--' : q.price.toFixed(2)}</b>
+        <i>${pending ? '加载中' : (up ? '+' : '') + q.change_pct.toFixed(2) + '%'}</i>
       </div>
       <button class="watch-del" data-i="${i}" title="删除">✕</button>
     </div>`;
   }).join('');
+}
 
-  // 缺当日 AI 打分的，后台逐支分析（有 key 才会真的发请求）
-  quotes.forEach((q, i) => ensureAnalysis(wl[i], q));
+async function loadCacheOnce() {
+  if (cacheLoaded) return;
+  cacheLoaded = true;
+  const saved = await storeGet('watch_quotes_cache', null);
+  if (saved && typeof saved === 'object') {
+    cacheMap = { ...saved, ...cacheMap };
+    for (const [c, q] of Object.entries(cacheMap)) if (q && q.name) lastNames[c] = q.name;
+  }
+}
+
+export async function renderWatch() {
+  await loadCacheOnce();
+  paint(); // 先出画面（缓存或"加载中"占位）
+
+  if (fetching) return; // 已有请求在路上，回来会重绘
+  const wl = state.watchlist;
+  if (!wl.length || !inTauri) return;
+  fetching = true;
+  try {
+    const quotes = await fetchQuotes(wl);
+    if (Array.isArray(quotes)) {
+      quotes.forEach(q => {
+        // 按代码匹配（东财返回 6 位无前缀，新浪带前缀）
+        const c = wl.find(x => x === q.code || (q.code && x.endsWith(q.code)));
+        if (c) { cacheMap[c] = q; lastNames[c] = q.name; }
+      });
+      storeSet('watch_quotes_cache', cacheMap); // 持久化，重启后首开也秒出
+      paint();
+      wl.forEach(c => { if (cacheMap[c]) ensureAnalysis(c, cacheMap[c]); });
+    }
+  } finally {
+    fetching = false;
+  }
 }
 
 function addWatch() {
@@ -113,8 +152,6 @@ function openAnalysis(i) {
   });
 }
 
-let lastNames = {}; // code → 最近一次行情里的名称（K线页标题用）
-
 export function initWatch() {
   document.getElementById('watchAddBtn').addEventListener('click', addWatch);
   document.getElementById('watchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatch(); });
@@ -125,7 +162,7 @@ export function initWatch() {
     if (btn) {
       state.watchlist.splice(+btn.dataset.i, 1);
       saveWatch();
-      renderWatch();
+      paint();
       return;
     }
     // 点名称/价格区域 → K线
