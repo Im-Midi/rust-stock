@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>rust-stock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+  :root {
+    /* 深色纯净扁平：实色不透明，不依赖窗口模糊 */
+    --bg: #0a0c10;
+    --surface: #12151c;
+    --surface-2: #181c25;
+    --surface-3: #1f2430;
+    --line: #242a36;
+    --line-soft: #1a1f29;
+    --txt: #e8ecf2;
+    --txt-2: #9aa4b2;
+    --txt-3: #5c6470;
+    --up: #ff4d4f;      /* A股红涨 */
+    --down: #14c87d;    /* A股绿跌 */
+    --accent: #4d8dff;
+    --warn: #f5a623;
+    --radius: 14px;
+    --radius-sm: 9px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    font-family: 'Sora', system-ui, sans-serif;
+    color: var(--txt);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 外壳：手机比例的悬浮窗（不透明深色，圆角内裁切）。
+     不加向外 box-shadow——透明窗口下会画进圆角外的直角区域。 */
+  .shell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transform-origin: 0 0; /* JS 按窗口宽度等比缩放整张 UI */
+  }
+
+  /* ---------- 顶部拖拽栏 ---------- */
+  .titlebar {
+    -webkit-app-region: drag;
+    flex-shrink: 0;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 12px;
+    background: linear-gradient(180deg, var(--surface) 0%, rgba(18,21,28,.6) 100%);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .logo-dot {
+    width: 22px; height: 22px; border-radius: 7px;
+    background: linear-gradient(135deg, var(--accent), #7b5cff);
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 700; color: #fff;
+    box-shadow: 0 2px 10px rgba(77,141,255,.35);
+  }
+  .titlebar h1 {
+    font-size: 13px; font-weight: 600; letter-spacing: .2px;
+    flex: 1;
+  }
+  .titlebar h1 span { color: var(--txt-3); font-weight: 400; font-size: 11px; }
+  .win-btns { display: flex; gap: 4px; -webkit-app-region: no-drag; }
+  .win-btn {
+    width: 26px; height: 26px; border-radius: 7px;
+    border: none; background: transparent; color: var(--txt-2);
+    cursor: pointer; display: grid; place-items: center;
+    transition: background .15s, color .15s;
+  }
+  .win-btn:hover { background: var(--surface-3); color: var(--txt); }
+  .win-btn.close:hover { background: rgba(255,77,79,.16); color: var(--up); }
+  .win-btn svg { width: 14px; height: 14px; }
+
+  /* ---------- 指数滚动条 ---------- */
+  .ticker {
+    flex-shrink: 0;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--surface);
+    position: relative;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+  }
+  .ticker-track {
+    display: flex;
+    gap: 22px;
+    padding: 0 16px;
+    white-space: nowrap;
+    animation: scroll 26s linear infinite;
+  }
+  .ticker:hover .ticker-track { animation-play-state: paused; }
+  @keyframes scroll { to { transform: translateX(-50%); } }
+  .tk { display: inline-flex; align-items: baseline; gap: 6px; font-size: 11px; }
+  .tk .name { color: var(--txt-2); }
+  .tk .val { font-family: 'DM Mono', monospace; font-weight: 500; }
+  .tk .chg { font-family: 'DM Mono', monospace; font-size: 10px; }
+  .up-c { color: var(--up); } .down-c { color: var(--down); }
+
+  /* ---------- 滚动主体 ---------- */
+  .body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .body::-webkit-scrollbar { width: 5px; }
+  .body::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+  .body::-webkit-scrollbar-thumb:hover { background: var(--line); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    padding: 14px;
+  }
+  .card-head {
+    display: flex; align-items: center; gap: 7px;
+    margin-bottom: 12px;
+  }
+  .card-head .bar { width: 3px; height: 13px; border-radius: 2px; background: var(--accent); }
+  .card-head h2 { font-size: 12.5px; font-weight: 600; letter-spacing: .3px; }
+  .card-head .meta { margin-left: auto; font-size: 10px; color: var(--txt-3); font-family: 'DM Mono', monospace; }
+
+  /* ---------- 情绪仪表盘 ---------- */
+  .sentiment { text-align: center; padding-top: 4px; }
+  .gauge-wrap { position: relative; width: 200px; height: 120px; margin: 0 auto; }
+  .gauge-val {
+    position: absolute; left: 0; right: 0; top: 74px;
+    font-family: 'DM Mono', monospace;
+    font-size: 22px; font-weight: 500;
+    letter-spacing: -.5px;
+  }
+  .gauge-label { font-size: 10px; color: var(--txt-3); margin-top: 2px; }
+  .gauge-tag {
+    display: inline-block; margin-top: 9px;
+    font-size: 11px; font-weight: 600;
+    padding: 3px 12px; border-radius: 20px;
+  }
+
+  /* ---------- 板块热力 ---------- */
+  .heat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .heat-cell {
+    border-radius: var(--radius-sm);
+    padding: 10px 9px;
+    display: flex; flex-direction: column; gap: 3px;
+    cursor: default;
+    transition: transform .12s;
+    position: relative;
+    overflow: hidden;
+  }
+  .heat-cell:hover { transform: translateY(-1px); }
+  .heat-cell .h-name { font-size: 11px; font-weight: 600; z-index: 1; }
+  .heat-cell .h-chg { font-size: 10px; font-family: 'DM Mono', monospace; opacity: .85; z-index: 1; }
+
+  /* ---------- 快讯流 ---------- */
+  .feed { display: flex; flex-direction: column; }
+  .feed-item {
+    display: flex; gap: 10px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--line-soft);
+    cursor: default;
+  }
+  .feed-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .feed-item:first-child { padding-top: 0; }
+  .feed-time {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px; color: var(--accent);
+    flex-shrink: 0; padding-top: 1px;
+    width: 38px;
+  }
+  .feed-body { flex: 1; }
+  .feed-txt { font-size: 11.5px; line-height: 1.5; color: var(--txt); }
+  .feed-tags { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+  .tag {
+    font-size: 9px; padding: 2px 7px; border-radius: 5px;
+    background: var(--surface-3); color: var(--txt-2);
+  }
+  .tag.neutral { color: var(--txt-2); }
+  .tag.bull { background: rgba(255,77,79,.13); color: var(--up); }
+  .tag.bear { background: rgba(20,200,125,.13); color: var(--down); }
+
+  /* ---------- 底部 AI 输入 + 导航 ---------- */
+  .dock { flex-shrink: 0; border-top: 1px solid var(--line-soft); background: var(--surface); }
+  .ai-bar { padding: 10px 12px 8px; display: flex; gap: 8px; align-items: center; }
+  .ai-input {
+    flex: 1; height: 36px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 0 14px;
+    color: var(--txt);
+    font-family: 'Sora', sans-serif;
+    font-size: 12px;
+    -webkit-user-select: text; user-select: text;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .ai-input::placeholder { color: var(--txt-3); }
+  .ai-input:focus { border-color: var(--accent); }
+  .send-btn {
+    width: 36px; height: 36px; flex-shrink: 0;
+    border: none; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), #6b7bff);
+    color: #fff; cursor: pointer;
+    display: grid; place-items: center;
+    transition: transform .12s, box-shadow .15s;
+  }
+  .send-btn:hover { transform: scale(1.06); box-shadow: 0 4px 14px rgba(77,141,255,.4); }
+  .send-btn svg { width: 16px; height: 16px; }
+
+  .nav {
+    display: flex;
+    padding: 4px 8px 8px;
+  }
+  .nav-item {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 5px 0;
+    border: none; background: transparent;
+    color: var(--txt-3); cursor: pointer;
+    font-size: 9px; font-family: 'Sora', sans-serif;
+    border-radius: 8px;
+    transition: color .15s, background .15s;
+  }
+  .nav-item svg { width: 17px; height: 17px; }
+  .nav-item.active { color: var(--accent); }
+  .nav-item:hover:not(.active) { color: var(--txt-2); }
+
+  /* 边缘吸附时的收起小条（默认隐藏，由 JS/Tauri 控制） */
+  .edge-tab {
+    display: none;
+    position: absolute; top: 50%; transform: translateY(-50%);
+    left: 0; width: 6px; height: 60px;
+    background: var(--accent); border-radius: 0 6px 6px 0;
+  }
+
+  /* ---------- 页面切换 ---------- */
+  .page { display: none; flex-direction: column; gap: 12px; }
+  .page.active { display: flex; }
+
+  /* ---------- 自选 / 设置 通用控件 ---------- */
+  .w-input {
+    width: 100%; height: 34px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 0 10px;
+    color: var(--txt);
+    font-family: 'Sora', sans-serif;
+    font-size: 12px;
+    outline: none;
+    -webkit-user-select: text; user-select: text;
+  }
+  .w-input:focus { border-color: var(--accent); }
+  .w-btn {
+    height: 34px; padding: 0 14px; flex-shrink: 0;
+    border: none; border-radius: var(--radius-sm);
+    background: var(--accent); color: #fff;
+    font-family: 'Sora', sans-serif; font-size: 12px; font-weight: 600;
+    cursor: pointer;
+    transition: filter .15s;
+  }
+  .w-btn:hover { filter: brightness(1.12); }
+  .w-btn.wide { width: 100%; margin-top: 2px; }
+
+  .watch-add { display: flex; gap: 8px; margin-bottom: 6px; }
+  .watch-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 2px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .watch-row:last-child { border-bottom: none; }
+  .watch-row .w-name { flex: 1; min-width: 0; }
+  .watch-row .w-name b { display: block; font-size: 12px; font-weight: 600; }
+  .watch-row .w-name i { font-style: normal; font-size: 9.5px; color: var(--txt-3); font-family: 'DM Mono', monospace; }
+  .watch-row .w-quote { text-align: right; font-family: 'DM Mono', monospace; }
+  .watch-row .w-quote b { display: block; font-size: 13px; font-weight: 500; }
+  .watch-row .w-quote i { font-style: normal; font-size: 10px; }
+  .watch-del {
+    border: none; background: transparent; color: var(--txt-3);
+    cursor: pointer; font-size: 13px; padding: 4px 6px;
+    border-radius: 6px;
+  }
+  .watch-del:hover { color: var(--up); background: var(--surface-3); }
+  .watch-empty { font-size: 11px; color: var(--txt-3); text-align: center; padding: 14px 0 6px; }
+
+  /* 行内 AI 情绪小仪表盘（名称与价格之间） */
+  .w-gauge {
+    width: 46px; height: 29px; flex-shrink: 0;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background .15s;
+  }
+  .w-gauge:hover { background: var(--surface-3); }
+  .w-gauge .needle-line { transition: transform .9s cubic-bezier(.22,1,.36,1); transform-box: view-box; }
+
+  /* AI 分析详情页 */
+  .ana-txt {
+    font-size: 12px; line-height: 1.75; color: var(--txt);
+    padding: 10px 2px 0;
+    -webkit-user-select: text; user-select: text;
+    white-space: pre-wrap;
+  }
+  .ana-score-up { color: var(--up); }
+  .ana-score-down { color: var(--down); }
+  .back-btn {
+    margin-left: auto;
+    height: 26px; padding: 0 12px;
+    border: 1px solid var(--line); border-radius: 13px;
+    background: var(--surface-2); color: var(--txt-2);
+    font-family: 'Sora', sans-serif; font-size: 11px;
+    cursor: pointer;
+  }
+  .back-btn:hover { color: var(--txt); border-color: var(--accent); }
+
+  .set-group { margin-bottom: 12px; }
+  .set-group label { display: block; font-size: 11px; color: var(--txt-2); margin-bottom: 6px; }
+  .set-note { font-size: 10px; color: var(--txt-3); margin-top: 10px; line-height: 1.5; }
+
+  /* 情绪卡片 3D 翻面 */
+  .flip { perspective: 900px; }
+  .flip-inner {
+    position: relative;
+    transition: transform .55s cubic-bezier(.45,.1,.2,1);
+    transform-style: preserve-3d;
+  }
+  .flip.flipped .flip-inner { transform: rotateY(180deg); }
+  .flip-face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .flip-front { cursor: pointer; }
+  .flip-back {
+    position: absolute; inset: 0;
+    transform: rotateY(180deg);
+    overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  .flip-back::-webkit-scrollbar { width: 4px; }
+  .flip-back::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 2px; }
+  .sent-hint { font-size: 9.5px; color: var(--txt-3); margin-top: 8px; }
+  .why-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+    font-size: 11px;
+  }
+  .why-row .n { flex: 1; color: var(--txt-2); text-align: left; }
+  .why-row .c { font-family: 'DM Mono', monospace; }
+  .why-row .w { color: var(--txt-3); font-size: 9.5px; font-family: 'DM Mono', monospace; width: 42px; text-align: right; }
+
+  /* AI 聊天 */
+  .chat-log { display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+  .msg {
+    max-width: 86%;
+    padding: 8px 11px;
+    border-radius: 12px;
+    font-size: 12px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word;
+    -webkit-user-select: text; user-select: text;
+  }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.ai { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--line-soft); border-bottom-left-radius: 4px; }
+  .msg.ai.typing::after { content: '▍'; color: var(--accent); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .msg.err { border-color: rgba(255,77,79,.4); color: var(--up); }
+  .chat-empty { font-size: 11px; color: var(--txt-3); text-align: center; padding: 22px 0; }
+
+  .fade-in { animation: fadeIn .4s ease both; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <!-- 全局 SVG 渐变定义（0 尺寸但始终渲染，供行内小表盘引用） -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="ggm" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#14c87d"/>
+        <stop offset="0.5" stop-color="#f5a623"/>
+        <stop offset="1" stop-color="#ff4d4f"/>
+      </linearGradient>
+    </defs>
+  </svg>
+  <div class="shell">
+
+    <!-- 拖拽标题栏 -->
+    <div class="titlebar" data-tauri-drag-region>
+      <div class="logo-dot">R</div>
+      <h1>rust<span>-stock</span></h1>
+      <div class="win-btns">
+        <button class="win-btn" id="pinBtn" title="置顶">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 4v6l-2 4h10l-2-4V4"/><path d="M12 14v6"/><path d="M8 4h8"/></svg>
+        </button>
+        <button class="win-btn" id="minBtn" title="最小化">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+        </button>
+        <button class="win-btn close" id="closeBtn" title="收起到边缘">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- 指数滚动 -->
+    <div class="ticker">
+      <div class="ticker-track" id="tickerTrack"></div>
+    </div>
+
+    <!-- 主体 -->
+    <div class="body" id="body">
+
+      <!-- ===== 页面：行情 ===== -->
+      <div class="page active" id="page-market">
+
+      <!-- 市场情绪（点击翻面看原因） -->
+      <div class="card fade-in sentiment">
+        <div class="flip" id="sentFlip">
+          <div class="flip-inner">
+
+            <!-- 正面：仪表盘 -->
+            <div class="flip-face flip-front" id="sentFront" title="点击查看原因">
+              <div class="card-head">
+                <div class="bar"></div>
+                <h2>市场情绪</h2>
+                <div class="meta" id="sentMeta">--:--:--</div>
+              </div>
+              <div class="gauge-wrap">
+                <svg viewBox="0 0 200 120" width="200" height="120">
+                  <defs>
+                    <linearGradient id="gg" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0" stop-color="#14c87d"/>
+                      <stop offset="0.5" stop-color="#f5a623"/>
+                      <stop offset="1" stop-color="#ff4d4f"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M14 100 A86 86 0 0 1 186 100" fill="none" stroke="#1f2430" stroke-width="11" stroke-linecap="round"/>
+                  <path d="M14 100 A86 86 0 0 1 186 100" fill="none" stroke="url(#gg)" stroke-width="11" stroke-linecap="round"
+                        stroke-dasharray="270" stroke-dashoffset="148" opacity=".9"/>
+                  <g id="needle" transform="rotate(0 100 100)">
+                    <path d="M100 100 L100 28" stroke="#e8ecf2" stroke-width="2.5" stroke-linecap="round"/>
+                    <circle cx="100" cy="100" r="5" fill="#e8ecf2"/>
+                  </g>
+                </svg>
+                <div class="gauge-val" id="sentVal">0.0</div>
+              </div>
+              <div class="gauge-label">市场情绪强弱 · 谨慎 ←→ 乐观</div>
+              <div class="gauge-tag" id="sentTag" style="background:rgba(245,166,35,.15);color:var(--warn)">--</div>
+              <div class="sent-hint">点击表盘，翻面看「为什么」→</div>
+            </div>
+
+            <!-- 背面：为什么是这个档位 -->
+            <div class="flip-face flip-back">
+              <div class="card-head">
+                <div class="bar" style="background:var(--warn)"></div>
+                <h2 id="sentWhyTitle">为什么</h2>
+                <button class="back-btn" id="sentBackBtn">← 返回</button>
+              </div>
+              <div id="sentWhyIdx"></div>
+              <div class="ana-txt" id="sentWhyTxt" style="font-size:11.5px;text-align:left"></div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- 板块热力 -->
+      <div class="card fade-in" style="animation-delay:.05s">
+        <div class="card-head">
+          <div class="bar" style="background:var(--up)"></div>
+          <h2>板块热力</h2>
+          <div class="meta">实时</div>
+        </div>
+        <div class="heat-grid" id="heatGrid"></div>
+      </div>
+
+      <!-- 快讯 -->
+      <div class="card fade-in" style="animation-delay:.1s">
+        <div class="card-head">
+          <div class="bar" style="background:var(--warn)"></div>
+          <h2>财联社电报</h2>
+          <div class="meta">11:49:48</div>
+        </div>
+        <div class="feed" id="feed"></div>
+      </div>
+
+      </div><!-- /page-market -->
+
+      <!-- ===== 页面：快讯 ===== -->
+      <div class="page" id="page-news">
+        <div class="card">
+          <div class="card-head">
+            <div class="bar" style="background:var(--warn)"></div>
+            <h2>财联社电报</h2>
+            <div class="meta" id="newsMeta">--:--:--</div>
+          </div>
+          <div class="feed" id="feedFull"></div>
+        </div>
+      </div>
+
+      <!-- ===== 页面：自选 ===== -->
+      <div class="page" id="page-watch">
+        <div class="card">
+          <div class="card-head">
+            <div class="bar"></div>
+            <h2>自选股</h2>
+            <div class="meta" id="watchMeta"></div>
+          </div>
+          <div class="watch-add">
+            <input class="w-input" id="watchInput" placeholder="代码，如 600519 / sh600519" />
+            <button class="w-btn" id="watchAddBtn">添加</button>
+          </div>
+          <div id="watchList"></div>
+          <div class="watch-empty" id="watchEmpty">暂无自选，先加一支试试</div>
+        </div>
+      </div>
+
+      <!-- ===== 页面：设置 ===== -->
+      <div class="page" id="page-settings">
+        <div class="card">
+          <div class="card-head">
+            <div class="bar" style="background:#7b5cff"></div>
+            <h2>设置</h2>
+          </div>
+          <div class="set-group">
+            <label>行情数据源</label>
+            <select class="w-input" id="setSource">
+              <option value="sina">新浪财经</option>
+              <option value="eastmoney">东方财富</option>
+            </select>
+          </div>
+          <div class="set-group">
+            <label>行情刷新间隔（秒）</label>
+            <input class="w-input" id="setInterval" type="number" min="3" max="600" />
+          </div>
+          <div class="set-group">
+            <label>DeepSeek API Key</label>
+            <input class="w-input" id="setKey" type="password" placeholder="sk-…" />
+          </div>
+          <button class="w-btn wide" id="setSaveBtn">保存设置</button>
+          <div class="set-note">所有设置只存在本机（localStorage，后续迁 SQLite）。填入 DeepSeek key 后，自选股将由 AI 给出看涨/看跌打分。</div>
+        </div>
+      </div>
+
+      <!-- ===== 页面：AI 聊天（不在导航里，底栏发送后进入） ===== -->
+      <div class="page" id="page-chat">
+        <div class="card">
+          <div class="card-head">
+            <div class="bar" style="background:#7b5cff"></div>
+            <h2>AI 助手</h2>
+            <button class="back-btn" id="chatBack">← 返回</button>
+          </div>
+          <div class="chat-log" id="chatLog">
+            <div class="chat-empty" id="chatEmpty">在下方输入框问我任何股票问题，回答流式逐字出现</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 页面：AI 分析详情（不在导航里，点小表盘进入） ===== -->
+      <div class="page" id="page-analysis">
+        <div class="card sentiment">
+          <div class="card-head">
+            <div class="bar"></div>
+            <h2 id="anaName">--</h2>
+            <button class="back-btn" 
