@@ -132,8 +132,11 @@ pub fn calc_sentiment(comps: Vec<SentComp>) -> Sentiment {
 
 #[cfg(feature = "net")]
 pub async fn fetch_sentiment() -> Result<Sentiment, String> {
-    // 上证 / 深成 / 创业板 / 沪深300，按市场代表性加权
-    let quotes = crate::quote::fetch_eastmoney(&["1.000001", "0.399001", "0.399006", "1.000300"]).await?;
+    // 上证 / 深成 / 创业板 / 沪深300，按市场代表性加权（走数据源注册表，统一代码格式）
+    let src = crate::sources::get("eastmoney").ok_or("eastmoney 数据源未注册")?;
+    let codes: Vec<String> = ["sh000001", "sz399001", "sz399006", "sh000300"]
+        .iter().map(|s| s.to_string()).collect();
+    let quotes = src.fetch(&codes).await?;
     if quotes.is_empty() {
         return Err("情绪计算失败：指数行情为空".into());
     }

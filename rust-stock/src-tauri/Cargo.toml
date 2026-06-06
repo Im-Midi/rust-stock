@@ -21,6 +21,7 @@ reqwest = { version = "0.12", features = ["gzip", "stream"] }
 encoding_rs = "0.8"   # 新浪 GBK 转 UTF-8
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures-util = "0.3"  # 流式响应 bytes_stream
+async-trait = "0.1"   # QuoteSource trait 的 dyn 动态分发
 # 本地存储（bundled 自带 SQLite，免装系统库）
 rusqlite = { version = "0.32", features = ["bundled"] }
 
