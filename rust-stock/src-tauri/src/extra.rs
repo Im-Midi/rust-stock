@@ -179,3 +179,159 @@ mod tests {
         assert!(parse_fund_flow("x").is_none());
     }
 }
+
+// ============================================================
+// 今日推荐候选池（涨幅榜 + 主力净流入榜 + 龙虎榜合并）
+// ============================================================
+#[derive(Debug, Clone, Serialize)]
+pub struct Candidate {
+    pub code: String,        // 统一格式 sh600519
+    pub name: String,
+    pub price: f64,
+    pub change_pct: f64,
+    pub turnover: f64,       // 换手率 %
+    pub main_flow: f64,      // 主力净流入（元）
+    pub on_lhb: bool,        // 是否当日上龙虎榜
+}
+
+/// 解析东财 clist 个股榜：data.diff[]，字段 f12代码 f13市场 f14名 f2现价 f3涨跌 f8换手 f62主力净额
+fn parse_clist_stocks(body: &str) -> Vec<Candidate> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let diff = &v["data"]["diff"];
+    let items: Vec<&serde_json::Value> = if let Some(a) = diff.as_array() {
+        a.iter().collect()
+    } else if let Some(o) = diff.as_object() {
+        o.values().collect()
+    } else {
+        return vec![];
+    };
+    items
+        .iter()
+        .filter_map(|d| {
+            let code6 = d["f12"].as_str()?;
+            let mkt = d["f13"].as_i64().unwrap_or(-1);
+            let prefix = match mkt {
+                1 => "sh",
+                0 => "sz",
+                _ => return None,
+            };
+            let name = d["f14"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || name.contains("ST") {
+                return None; // 过滤 ST
+            }
+            Some(Candidate {
+                code: format!("{prefix}{code6}"),
+                name,
+                price: num(&d["f2"]),
+                change_pct: num(&d["f3"]),
+                turnover: num(&d["f8"]),
+                main_flow: num(&d["f62"]),
+                on_lhb: false,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "net")]
+async fn clist_rank(fid: &str, pz: u32) -> Vec<Candidate> {
+    // 沪深主板+创业板+科创板 A 股
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz={pz}&po=1&np=1&fltt=2&invt=2\
+         &fid={fid}&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:7,m:1+t:3\
+         &fields=f2,f3,f8,f12,f13,f14,f62&ut=bd1d9ddb04089700cf9c27f6f7426281"
+    );
+    match reqwest::Client::new()
+        .get(&url)
+        .header("Referer", "https://quote.eastmoney.com/")
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.text().await {
+            Ok(t) => parse_clist_stocks(&t),
+            Err(_) => vec![],
+        },
+        Err(_) => vec![],
+    }
+}
+
+/// 解析龙虎榜返回，取当日上榜的 6 位代码集合
+fn parse_lhb_codes(body: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(arr) = v["result"]["data"].as_array() {
+            for item in arr {
+                if let Some(c) = item["SECURITY_CODE"].as_str() {
+                    set.insert(c.to_string());
+                }
+            }
+        }
+    }
+    set
+}
+
+#[cfg(feature = "net")]
+async fn fetch_lhb_codes() -> std::collections::HashSet<String> {
+    // 东财龙虎榜当日列表（取最近交易日，按上榜净额）
+    let url = "https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=TRADE_DATE&sortTypes=-1&pageSize=200&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=SECURITY_CODE&source=WEB&client=WEB";
+    match reqwest::Client::new().get(url).header("Referer", "https://data.eastmoney.com/").send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(t) => parse_lhb_codes(&t),
+            Err(_) => Default::default(),
+        },
+        Err(_) => Default::default(),
+    }
+}
+
+/// 候选池：涨幅榜 top + 主力净流入榜 top 合并去重，标记龙虎榜
+#[cfg(feature = "net")]
+pub async fn fetch_candidates() -> Result<Vec<Candidate>, String> {
+    let (gainers, inflow, lhb) = tokio::join!(
+        clist_rank("f3", 35),   // 涨幅榜
+        clist_rank("f62", 35),  // 主力净流入榜
+        fetch_lhb_codes(),
+    );
+    let mut map: std::collections::BTreeMap<String, Candidate> = std::collections::BTreeMap::new();
+    for mut c in gainers.into_iter().chain(inflow.into_iter()) {
+        // 龙虎榜标记（code 去前缀比对 6 位）
+        let code6 = &c.code[2..];
+        c.on_lhb = lhb.contains(code6);
+        map.entry(c.code.clone()).or_insert(c);
+    }
+    let out: Vec<Candidate> = map.into_values().collect();
+    if out.is_empty() {
+        return Err("候选池为空（榜单接口可能变了或非交易时段）".into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod cand_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_clist_stocks() {
+        let raw = r#"{"data":{"diff":[
+            {"f2":16.85,"f3":5.2,"f8":3.1,"f12":"600519","f13":1,"f14":"贵州茅台","f62":12345678.0},
+            {"f2":9.4,"f3":-1.2,"f8":8.0,"f12":"000001","f13":0,"f14":"平安银行","f62":-5000000.0},
+            {"f2":3.2,"f3":1.0,"f8":2.0,"f12":"000007","f13":0,"f14":"ST全新","f62":100.0}
+        ]}}"#;
+        let c = parse_clist_stocks(raw);
+        assert_eq!(c.len(), 2); // ST 过滤
+        assert_eq!(c[0].code, "sh600519");
+        assert!((c[0].change_pct - 5.2).abs() < 0.01);
+        assert_eq!(c[1].code, "sz000001");
+        assert!(c[1].change_pct < 0.0); // 下跌股保留（不淘汰）
+    }
+
+    #[test]
+    fn test_parse_lhb_codes() {
+        let raw = r#"{"result":{"data":[{"SECURITY_CODE":"600519"},{"SECURITY_CODE":"300750"}]}}"#;
+        let s = parse_lhb_codes(raw);
+        assert!(s.contains("600519"));
+        assert_eq!(s.len(), 2);
+        assert!(parse_lhb_codes("x").is_empty());
+    }
+}

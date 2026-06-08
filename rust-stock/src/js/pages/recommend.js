@@ -37,7 +37,7 @@ async function generate(force = false, manual = false) {
   // manual=true 是用户点按钮，给出明确反馈；auto 模式保持安静
   if (!inTauri) { if (manual) flashHint('浏览器预览无法调用 AI'); return; }
   if (!aiReady()) { if (manual) flashHint('先在设置页接入 AI API Key'); return; }
-  if (pending) { if (manual) flashHint('AI 正在生成中，约需 1~2 分钟（详尽产业链分析），请稍候'); return; }
+  if (pending) { if (manual) flashHint('AI 正在生成中，约需 1~3 分钟（筛全市场候选池 + 多流派深度分析），请稍候'); return; }
   const tk = today();
   if (!force && state.recHistory[tk]) return;
   pending = true;
@@ -95,7 +95,7 @@ export function renderRecommend() {
   meta.textContent = recs ? tk : '';
   if (!recs) {
     if (pending) {
-      list.innerHTML = '<div class="rec-empty">⏳ AI 正在详尽分析今日盘面并用实时行情复核，约需 1~2 分钟（详尽产业链分析）…</div>';
+      list.innerHTML = '<div class="rec-empty">⏳ AI 正在详尽分析今日盘面并用实时行情复核，约需 1~3 分钟（筛全市场候选池 + 多流派深度分析）…</div>';
       note.textContent = '';
     } else if (!aiReady()) {
       list.innerHTML = '<div class="rec-empty">接入 AI（设置页）后，每天自动生成 3 支推荐</div>';
@@ -127,7 +127,7 @@ export function renderRecommend() {
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
-  note.textContent = 'AI 候选已用实时行情复核（当日明显下跌/查无此码的自动淘汰）。★ = 连续一周（≥7 个推荐日）推荐同一支。仅供参考，不构成投资建议。';
+  note.textContent = '本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
 }
 
 function addToWatch(i) {

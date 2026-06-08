@@ -86,6 +86,12 @@ async fn fetch_fund_flow(code: String) -> Result<extra::FundFlow, String> {
     extra::fetch_fund_flow(&code).await
 }
 
+/// 今日推荐候选池（涨幅榜+主力净流入榜+龙虎榜合并，前端可预览数量）
+#[tauri::command]
+async fn fetch_candidates() -> Result<Vec<extra::Candidate>, String> {
+    extra::fetch_candidates().await
+}
+
 /// 自选股相关快讯（行情页"自选股信息"卡片）
 #[tauri::command]
 async fn fetch_stock_news(codes: Vec<String>) -> Result<Vec<feed::NewsItem>, String> {
@@ -303,107 +309,76 @@ async fn ai_recommend(
     key: String,
     base_url: Option<String>,
     model: Option<String>,
-    context: String, // 前端拼好的盘面背景（日期/情绪/指数）
+    context: String, // 盘面背景（日期/情绪/指数）
 ) -> Result<Vec<RecStock>, String> {
     let cfg = ai::AiConfig::new(key, base_url, model)?;
+
+    // 1) 本地从真实数据筛候选池（涨幅榜+主力净流入榜+龙虎榜合并），失败则用纯 AI 兜底
+    let candidates = extra::fetch_candidates().await.unwrap_or_default();
+    let pool_text = if candidates.is_empty() {
+        String::from("（实时候选池获取失败，请基于你的知识谨慎给出候选，并在每条注明需人工核实行情）")
+    } else {
+        let mut lines = String::from("以下是本地用真实行情筛出的候选池（这些数字是真实的，可直接引用，禁止改写）：\n");
+        for c in candidates.iter().take(60) {
+            lines.push_str(&format!(
+                "{} {} 现价{:.2} 涨跌{:+.2}% 换手{:.1}% 主力净额{:.0}万{}\n",
+                c.code, c.name, c.price, c.change_pct, c.turnover, c.main_flow / 1e4,
+                if c.on_lhb { " [今日上龙虎榜]" } else { "" }
+            ));
+        }
+        lines
+    };
+
+    // 2) 多流派 + 供应链 + 龙虎榜 的深度 prompt（ai-hedge-fund 范式）
     let prompt = format!(
-        "{context}。请用供应链瓶颈研究法给出 6 支当前值得【买入关注】的A股候选\
-        （系统随后会用真实实时行情复核，自动淘汰当日明显下跌的标的，最终展示前 3 支）。\
-         研究方法：先把主题翻译成系统性变化，拆解产业链上下游（下游需求→系统集成→模块→芯片器件→制程封装→设备检测→材料耗材→基础设施），\
-         找出供给最难扩张的稀缺层（供应商少/认证周期长/扩产难/工艺壁垒高），优先推荐控制或最接近稀缺层的公司，而非单纯蹭主题的公司。\
-         硬性要求：\
-         1) 只选看涨标的——看跌、破位、抛压沉重的绝不能出现；\
-         2) 避开 ST、退市风险股；代码必须真实存在；\
-         3) 你无法获取实时行情，禁止编造当日涨跌幅、现价、市值、合同金额等数字；\
-         4) 每支 reason 必须详尽（250~400字），依次覆盖六个小节并用「」标出：\
-         「产业链位置」处于哪条链的哪一层，上游是什么、下游卖给谁；\
-         「卡住的环节」控制/供应/受益于哪个稀缺环节，为什么难扩产；\
-         「排序原因」需求传导到它的财务路径（收入/毛利/订单哪一项先动）；\
-         「证据」公开可查的支撑方向（公告/订单/产能/客户认证，不编造具体数字）；\
-         「主要风险」替代技术/竞争扩产/需求不及预期/估值透支中最致命的一条；\
-         「证伪条件」什么情况说明判断错了。\
-         严格只输出 JSON 数组，共 6 个元素：\
-         [{{\"code\":\"sh600519 或 sz000001 这种格式\",\"name\":\"股票名称\",\
-         \"score\":1到100的整数（看涨信心，不允许负数）,\"reason\":\"…\"}}]"
+        "{context}。\n{pool_text}\n         请从上述候选池里精选 8~12 支今日最值得关注的A股，按以下方法综合判断：\n         A) 供应链瓶颈研究法打底：判断它在产业链哪一层、是否卡住稀缺环节、上下游传导；\n         B) 多流派视角各自打分（借鉴 ai-hedge-fund）：用 价值派(护城河/估值安全边际)、成长派(行业S曲线/TAM)、游资打板派(题材热度/龙虎榜/换手量能)、技术派(趋势/突破/均线)、宏观派(政策/资金面) 五个视角分别给倾向，再综合裁决；\n         C) 龙虎榜与主力资金：标注[今日上龙虎榜]或主力大幅净流入的，是游资/机构关注信号，要重点说明；\n         重要：当日下跌不是淘汰理由——回调中的优质股(基本面强、卡住稀缺环节、主力仍在流入)同样可以推荐，请说明逻辑；避开 ST/退市风险股。\n         每支 reason 写 200~350 字，依次覆盖：「产业链位置」「多流派分歧(逐个流派一句话:价值/成长/游资/技术/宏观)」「龙虎榜/资金信号」「为什么今日值得关注」「主要风险」「证伪条件」。\n         禁止编造候选池里没有的价格/涨跌幅。严格只输出 JSON 数组，每元素：\n         [{{\"code\":\"sh600519\",\"name\":\"名称\",\"score\":1到100整数(综合看好度),\"reason\":\"…\"}}]"
     );
     let messages = vec![
-        serde_json::json!({ "role": "system", "content": "你是严谨的A股产业链研究助手，方法论：供应链瓶颈优先，先排层级再排公司。只输出 JSON 数组，不输出任何其他文字。推荐仅供参考，不构成投资建议。" }),
+        serde_json::json!({ "role": "system", "content": "你是严谨的A股产业链+多流派研究助手，方法论：供应链瓶颈优先，叠加价值/成长/游资/技术/宏观多视角打分后综合裁决。只输出 JSON 数组，不输出任何其他文字。推荐仅供参考，不构成投资建议。" }),
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
     let content = ai::chat_once(&cfg, messages, 0.5).await?;
     let arr = ai::extract_json_array(&content)?;
     let list = arr.as_array().ok_or("AI 返回的不是数组")?;
-    let mut cands: Vec<(String, String, i32, String)> = Vec::new();
-    for item in list.iter().take(6) {
+
+    // 3) 候选池建索引（真实行情回填，AI 不编数字）
+    use std::collections::HashMap;
+    let by_code: HashMap<&str, &extra::Candidate> =
+        candidates.iter().map(|c| (c.code.as_str(), c)).collect();
+
+    let mut out: Vec<RecStock> = Vec::new();
+    for item in list.iter().take(12) {
         let raw_code = item["code"].as_str().unwrap_or("").trim().to_lowercase();
-        // 容错：AI 可能只回 6 位数字
         let code = if raw_code.len() == 6 && raw_code.chars().all(|c| c.is_ascii_digit()) {
-            let prefix = if raw_code.starts_with('6') || raw_code.starts_with('5') || raw_code.starts_with('9') { "sh" } else { "sz" };
-            format!("{prefix}{raw_code}")
+            let p = if raw_code.starts_with('6') || raw_code.starts_with('5') || raw_code.starts_with('9') { "sh" } else { "sz" };
+            format!("{p}{raw_code}")
         } else {
             raw_code
         };
         if !(code.len() == 8 && (code.starts_with("sh") || code.starts_with("sz"))) {
-            continue; // 格式不合法的丢弃
+            continue;
         }
-        // 只收看涨标的：AI 若违规给出 0/负分（看跌），直接丢弃
         let score = item["score"].as_i64().unwrap_or(0);
         if score <= 0 {
             continue;
         }
-        cands.push((
+        // 用候选池真实行情回填（不淘汰跌幅！）；候选池里没有的，price=0 标识未复核
+        let (price, change_pct, name) = match by_code.get(code.as_str()) {
+            Some(c) => (c.price, c.change_pct, c.name.clone()),
+            None => (0.0, 0.0, item["name"].as_str().unwrap_or("").to_string()),
+        };
+        out.push(RecStock {
             code,
-            item["name"].as_str().unwrap_or("").to_string(),
-            score.clamp(1, 100) as i32,
-            item["reason"].as_str().unwrap_or("").to_string(),
-        ));
+            name: if name.is_empty() { item["name"].as_str().unwrap_or("").to_string() } else { name },
+            score: score.clamp(1, 100) as i32,
+            reason: item["reason"].as_str().unwrap_or("").to_string(),
+            price,
+            change_pct,
+        });
     }
-    if cands.is_empty() {
-        return Err("AI 未返回符合要求的看涨推荐，请点「重新生成」".into());
-    }
-
-    // ===== 真实行情复核 =====
-    // AI 没有实时数据，推荐与个股打分可能打架。这里用真实行情把关：
-    //   1) 当日跌幅超过 1.5% 的候选淘汰（"推荐却在跌"的来源）
-    //   2) 行情里查无此码的淘汰（AI 编造的代码）
-    //   3) 剩余按 score 排序取前 3，并带回真实价格/涨跌幅供前端展示
-    let mut out: Vec<RecStock> = Vec::new();
-    let mut market_checked = false;
-    if let Some(src) = sources::get("eastmoney") {
-        let codes: Vec<String> = cands.iter().map(|c| c.0.clone()).collect();
-        if let Ok(quotes) = src.fetch(&codes).await {
-            market_checked = true;
-            for (code, name, score, reason) in &cands {
-                // 东财返回的 code 是 6 位数字（无 sh/sz 前缀），按后缀匹配
-                let Some(q) = quotes.iter().find(|q| !q.code.is_empty() && code.ends_with(&q.code)) else {
-                    continue; // 查无此码 → AI 幻觉代码，丢弃
-                };
-                if q.change_pct < -1.5 {
-                    continue; // 当日明显下跌 → 不推
-                }
-                out.push(RecStock {
-                    code: code.clone(),
-                    name: if name.is_empty() { q.name.clone() } else { name.clone() },
-                    score: *score,
-                    reason: reason.clone(),
-                    price: q.price,
-                    change_pct: q.change_pct,
-                });
-            }
-            out.sort_by(|a, b| b.score.cmp(&a.score));
-            out.truncate(3);
-        }
-    }
-    if !market_checked {
-        // 行情服务不可用：退化为未复核的前 3（price=0 表示未复核）
-        out = cands
-            .into_iter()
-            .take(3)
-            .map(|(code, name, score, reason)| RecStock { code, name, score, reason, price: 0.0, change_pct: 0.0 })
-            .collect();
-    }
+    out.sort_by(|a, b| b.score.cmp(&a.score));
     if out.is_empty() {
-        return Err("AI 候选经实时行情复核后全部被淘汰（当日均在下跌或代码无效），今天可能不宜追高，请稍后再试".into());
+        return Err("AI 未返回有效推荐，请点「重新生成」重试".into());
     }
     Ok(out)
 }
@@ -662,6 +637,7 @@ pub fn run() {
             classify_news,
             fetch_sectors,
             fetch_fund_flow,
+            fetch_candidates,
             fetch_sentiment,
             fetch_kline,
             ai_recommend,
