@@ -41,6 +41,13 @@ export async function initSettings(onSaved) {
   document.getElementById('setAiBase').value = state.settings.aiBase;
   document.getElementById('setAiModel').value = state.settings.aiModel;
 
+  // 重置"关闭行为"记忆（下次关闭重新询问）
+  const rc = document.getElementById('resetCloseBtn');
+  if (rc) rc.addEventListener('click', () => {
+    saveSettings({ ...state.settings, closeAction: '' });
+    flashHint('已重置：下次关闭会重新询问');
+  });
+
   document.getElementById('setSaveBtn').addEventListener('click', () => {
     const s = {
       source: sel.value,

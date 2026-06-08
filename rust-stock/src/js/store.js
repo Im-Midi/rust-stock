@@ -1,7 +1,7 @@
 // store.js — 全局状态 + 持久化（SQLite 权威，localStorage 缓存/浏览器回退）
 import { inTauri, invoke } from './bridge.js';
 
-export const DEFAULT_SETTINGS = { source: 'sina', interval: 10, key: '', aiBase: '', aiModel: '' };
+export const DEFAULT_SETTINGS = { source: 'sina', interval: 10, key: '', aiBase: '', aiModel: '', closeAction: '' };
 
 export const state = {
   settings: { ...DEFAULT_SETTINGS },

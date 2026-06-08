@@ -228,6 +228,44 @@
   }
   .send-btn:hover { transform: scale(1.06); box-shadow: 0 4px 14px rgba(77,141,255,.4); }
   .send-btn svg { width: 16px; height: 16px; }
+  .mode-btn {
+    width: 30px; height: 30px; flex-shrink: 0;
+    border: 1px solid var(--line); border-radius: 50%;
+    background: var(--surface-2); color: var(--txt-3);
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: all .15s;
+  }
+  .mode-btn:hover { color: var(--txt-2); }
+  .mode-btn.on { background: #7b5cff; border-color: #7b5cff; color: #fff; box-shadow: 0 2px 10px rgba(123,92,255,.4); }
+
+  /* 关闭确认对话框 */
+  .modal-mask {
+    display: none;
+    position: absolute; inset: 0; z-index: 200;
+    background: rgba(0,0,0,.55);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    width: 80%; max-width: 280px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.5);
+  }
+  .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .modal-msg { font-size: 12px; color: var(--txt-2); line-height: 1.6; margin-bottom: 12px; }
+  .modal-remember { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--txt-3); margin-bottom: 14px; cursor: pointer; }
+  .modal-btns { display: flex; flex-direction: column; gap: 8px; }
+  .m-btn {
+    height: 36px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--surface-2); color: var(--txt);
+    font-family: 'Sora', sans-serif; font-size: 12.5px; cursor: pointer;
+    transition: filter .15s, background .15s;
+  }
+  .m-btn:hover { background: var(--surface-3); }
+  .m-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .m-btn.danger { color: var(--up); border-color: rgba(255,77,79,.4); }
+  .m-btn.primary:hover { filter: brightness(1.1); background: var(--accent); }
 
   .nav { display: flex; padding: 4px 8px 8px; }
   .nav-item {
@@ -681,6 +719,10 @@
             <label>开机自启动</label>
             <button class="w-btn wide" id="autostartBtn" style="background:var(--surface-3);color:var(--txt-2)">检测中…</button>
           </div>
+          <div class="set-group">
+            <label>关闭按钮行为</label>
+            <button class="w-btn wide" id="resetCloseBtn" style="background:var(--surface-3);color:var(--txt-2)">重置（下次关闭重新询问）</button>
+          </div>
           <button class="w-btn wide" id="setSaveBtn">保存设置</button>
           <div class="set-note">所有设置只存本机 SQLite。填入 key 后启用：自选股 AI 打分、情绪 AI 解读、今日推荐、AI 聊天。Base URL/模型可切换任意 OpenAI 兼容服务（Kimi、通义、本地 Ollama 等）。</div>
         </div>
@@ -714,7 +756,7 @@
             <button class="back-btn" id="chatBack">← 返回</button>
           </div>
           <div class="chat-log" id="chatLog">
-            <div class="chat-empty" id="chatEmpty">在下方输入框问我任何股票问题，回答流式逐字出现<br/><br/>输入「<b>深度调研 + 主题</b>」触发产业链八层拆解<br/>例：深度调研 AI算力光模块</div>
+            <div class="chat-empty" id="chatEmpty">在下方输入框问我任何股票问题，回答流式逐字出现<br/><br/>点亮输入框左侧的「<b>研</b>」按钮进入<b>深度调研</b>模式，再输入主题（如 AI算力光模块），AI 会做产业链八层拆解</div>
           </div>
         </div>
       </div>
@@ -756,6 +798,7 @@
     <!-- 底部 dock -->
     <div class="dock">
       <div class="ai-bar">
+        <button class="mode-btn" id="deepBtn" title="深度调研模式：产业链八层拆解">研</button>
         <input class="ai-input" id="aiInput" placeholder="问问 AI 助手…" />
         <button class="send-btn" id="sendBtn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
@@ -778,6 +821,20 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
           设置
         </button>
+      </div>
+    </div>
+
+    <!-- 关闭确认对话框 -->
+    <div class="modal-mask" id="closeModal">
+      <div class="modal">
+        <div class="modal-title">关闭 rust-stock</div>
+        <div class="modal-msg">你希望如何关闭？最小化到托盘可后台保持行情刷新。</div>
+        <label class="modal-remember"><input type="checkbox" id="closeRemember" /> 记住我的选择（可在设置页重置）</label>
+        <div class="modal-btns">
+          <button class="m-btn primary" id="closeTray">最小化到托盘</button>
+          <button class="m-btn danger" id="closeQuit">彻底退出</button>
+          <button class="m-btn" id="closeCancel">取消</button>
+        </div>
       </div>
     </div>
 

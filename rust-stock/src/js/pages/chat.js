@@ -37,8 +37,8 @@ async function sendAI() {
   curAiText = '';
   aiBusy = true;
   chatHistory.push({ role: 'user', content: q });
-  // 「深度调研 主题」触发产业链八层拆解工作流（回答更长更慢）
-  const mode = /^(深度)?调研[\s:：]/.test(q) || q.startsWith('深度调研') ? 'research' : null;
+  // 深度调研模式由「研」按钮的点亮状态决定（产业链八层拆解，回答更长更慢）
+  const mode = document.getElementById('deepBtn').classList.contains('on') ? 'research' : null;
   try {
     await askAi(q, chatHistory.slice(0, -1).slice(-12), mode);
   } catch (e) {
@@ -76,6 +76,12 @@ export function initChat() {
   document.getElementById('sendBtn').addEventListener('click', sendAI);
   aiInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAI(); });
   document.getElementById('chatBack').addEventListener('click', () => switchPage('market'));
+  const deepBtn = document.getElementById('deepBtn');
+  deepBtn.addEventListener('click', () => {
+    const on = deepBtn.classList.toggle('on');
+    aiInput.placeholder = on ? '深度调研：输入主题，如 AI算力光模块…' : '问问 AI 助手…';
+    if (on) flashHint('深度调研已开启：输入主题做产业链八层拆解');
+  });
   listen('ai-chunk', (e) => appendAiChunk(e.payload));
   listen('ai-done', () => finishAi());
   listen('ai-error', (e) => failAi(e.payload));

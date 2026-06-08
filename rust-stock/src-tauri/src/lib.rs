@@ -14,7 +14,22 @@ mod sources;
 mod storage;
 
 use quote::Quote;
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
+};
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    if let Some(band) = app.get_webview_window("band") {
+        let _ = band.hide();
+    }
+}
 
 const EDGE_THRESHOLD: f64 = 24.0; // 距屏幕边缘多少像素触发吸附
 const PEEK_WIDTH: f64 = 6.0; // 收起后露出的小条宽度
@@ -347,6 +362,22 @@ fn minimize_window(window: WebviewWindow) {
     let _ = window.minimize();
 }
 
+/// 最小化到系统托盘：藏主窗（托盘图标常驻，点图标/菜单可还原）
+#[tauri::command]
+fn hide_to_tray(window: WebviewWindow) {
+    let _ = window.hide();
+    if let Some(band) = window.app_handle().get_webview_window("band") {
+        let _ = band.hide();
+    }
+}
+
+/// 彻底退出应用
+#[tauri::command]
+fn quit_app(window: WebviewWindow) {
+    save_win_state(&window); // 退出前存一次窗口位置/大小
+    window.app_handle().exit(0);
+}
+
 const BAND_W: f64 = 86.0; // 挂件逻辑宽度
 
 /// 缩小为屏幕右缘的竖排仪表盘挂件：隐藏主窗，band 窗贴右边显示。
@@ -557,6 +588,8 @@ pub fn run() {
             show_band,
             resize_band,
             restore_main,
+            hide_to_tray,
+            quit_app,
             ask_ai,
             analyze_stock,
             explain_sentiment,
@@ -576,6 +609,32 @@ pub fn run() {
             // SQLite：放 app data 目录，随系统用户走
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
             let db = storage::init_db(data_dir).expect("初始化 SQLite 失败");
+
+            // 系统托盘：左键点图标还原主窗，右键弹菜单（显示/退出）
+            let show_i = MenuItem::with_id(app, "show", "显示主窗", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "退出 rust-stock", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("rust-stock")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
 
             let win = app.get_webview_window("main").unwrap();
             let _ = win.set_always_on_top(true);
