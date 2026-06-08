@@ -19,7 +19,7 @@ export function flashHint(msg) {
   el.style.cssText = `position:absolute;bottom:90px;left:50%;transform:translateX(-50%);
     background:var(--surface-3);color:var(--txt);font-size:11px;padding:7px 14px;
     border-radius:18px;border:1px solid var(--line);z-index:99;
-    box-shadow:0 6px 20px rgba(0,0,0,.4);animation:fadeIn .25s;white-space:nowrap`;
+    box-shadow:0 6px 20px rgba(0,0,0,.4);animation:fadeIn .25s;max-width:80%;text-align:center;line-height:1.5`;
   document.querySelector('.shell').appendChild(el);
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 1400);
   setTimeout(() => el.remove(), 1800);

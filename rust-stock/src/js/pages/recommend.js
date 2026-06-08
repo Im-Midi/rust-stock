@@ -47,6 +47,7 @@ async function generate(force = false, manual = false) {
   setRefreshBtn(true);
   renderRecommend(); // 显示"生成中"
   let ok = false;
+  let errMsg = '';
   try {
     const s = getSentiment();
     const ctx = s
@@ -56,19 +57,29 @@ async function generate(force = false, manual = false) {
     if (Array.isArray(recs) && recs.length) {
       state.recHistory[tk] = recs;
       ok = true;
-      // 只留最近 30 个推荐日
       const days = Object.keys(state.recHistory).sort().reverse();
       for (const d of days.slice(30)) delete state.recHistory[d];
       saveRecHistory();
+    } else {
+      errMsg = 'AI 未返回有效推荐，请重试';
     }
   } catch (e) {
+    errMsg = String(e).replace(/^Error:\s*/, '');
     console.warn('AI 推荐失败:', e);
-    flashHint('AI 推荐失败：' + e);
   } finally {
     if (!ok && backup) state.recHistory[tk] = backup; // 失败恢复旧结果
     pending = false;
     setRefreshBtn(false);
     renderRecommend();
+    if (!ok && errMsg) {
+      if (!state.recHistory[tk]) {
+        // 无旧结果可显示 → 错误占位（可换行）
+        document.getElementById('recList').innerHTML =
+          `<div class="rec-empty err-text">⚠️ ${errMsg}</div>`;
+      } else {
+        flashHint('AI 推荐失败，已保留上次结果');
+      }
+    }
   }
 }
 

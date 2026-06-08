@@ -39,6 +39,22 @@ impl AiConfig {
     }
 }
 
+/// 把 AI 服务的 HTTP 错误翻成清晰中文（认证/限流/余额等常见情况）
+fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
+    // 尝试取 error.message
+    let msg = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| body.chars().take(160).collect());
+    match status.as_u16() {
+        401 => format!("AI API Key 无效或已过期，请到设置页检查 Key（并确认账户余额）。原始信息：{msg}"),
+        402 => format!("AI 账户余额不足，请充值后再试。原始信息：{msg}"),
+        429 => format!("AI 请求过于频繁或额度用尽（限流），稍后再试。原始信息：{msg}"),
+        s if s >= 500 => format!("AI 服务端错误（{status}），稍后再试。原始信息：{msg}"),
+        _ => format!("AI 服务返回 {status}：{msg}"),
+    }
+}
+
 /// 一次性问答（非流式），返回 content 文本
 pub async fn chat_once(cfg: &AiConfig, messages: Vec<Value>, temperature: f64) -> Result<String, String> {
     // max_tokens 给足：详尽版推荐 reason（6×250~400字）会撞部分服务的默认输出上限导致 JSON 截断
@@ -58,7 +74,7 @@ pub async fn chat_once(cfg: &AiConfig, messages: Vec<Value>, temperature: f64) -
     let status = resp.status();
     let text = resp.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("AI 服务返回 {status}: {text}"));
+        return Err(friendly_http_error(status, &text));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {e}"))?;
     v["choices"][0]["message"]["content"]
@@ -156,7 +172,7 @@ pub async fn chat_stream(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("AI 服务返回 {status}: {text}"));
+        return Err(friendly_http_error(status, &text));
     }
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
