@@ -1,6 +1,6 @@
 // pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
-import { fetchKline } from '../api.js';
+import { fetchKline, fetchQuotes, fetchFundFlow } from '../api.js';
 import { switchPage } from '../router.js';
 import { inTauri } from '../bridge.js';
 
@@ -147,12 +147,66 @@ async function load() {
     `${cur.code.toUpperCase()} · 共 ${data.length} 根 · 前复权 · 滚轮缩放 / 拖动平移` + (mocked ? ' · 预览模拟数据' : ' · 东方财富');
 }
 
+// 金额格式化：元 → 亿/万
+function fmtAmt(yuan) {
+  const a = Math.abs(yuan);
+  const sign = yuan >= 0 ? '+' : '-';
+  if (a >= 1e8) return `${sign}${(a / 1e8).toFixed(2)}亿`;
+  if (a >= 1e4) return `${sign}${(a / 1e4).toFixed(0)}万`;
+  return `${sign}${a.toFixed(0)}`;
+}
+
+async function loadDetail(code) {
+  const el = document.getElementById('stockDetail');
+  el.innerHTML = '';
+  const quotes = await fetchQuotes([code]);
+  const q = quotes && quotes[0];
+  let html = '';
+  if (q) {
+    const volWan = (q.volume / 1e4).toFixed(0); // 手→万手 约略
+    const cells = [
+      ['今开', q.open ? q.open.toFixed(2) : '--'],
+      ['昨收', q.prev_close ? q.prev_close.toFixed(2) : '--'],
+      ['最高', q.high ? q.high.toFixed(2) : '--'],
+      ['最低', q.low ? q.low.toFixed(2) : '--'],
+      ['成交量', q.volume ? volWan + '万手' : '--'],
+      ['成交额', q.amount ? (q.amount / 1e8).toFixed(2) + '亿' : '--'],
+    ];
+    html += '<div class="sd-grid">' + cells.map(c =>
+      `<div class="sd-cell"><div class="k">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('') + '</div>';
+  }
+  // 资金流（红=流入，绿=流出；失败则不显示）
+  const ff = await fetchFundFlow(code);
+  if (ff) {
+    const rows = [
+      ['主力净流入', ff.main, ff.main_pct],
+      ['超大单', ff.super_big, null],
+      ['大单', ff.big, null],
+      ['中单', ff.mid, null],
+      ['小单', ff.small, null],
+    ];
+    const max = Math.max(1, ...rows.map(r => Math.abs(r[1])));
+    html += '<div class="sd-flow-title">资金流向（今日）</div><div class="sd-flow">' + rows.map(r => {
+      const inflow = r[1] >= 0;
+      const w = Math.min(50, Math.abs(r[1]) / max * 50);
+      const color = inflow ? 'var(--up)' : 'var(--down)';
+      const bar = `<i style="${inflow ? 'left:50%' : 'right:50%'};width:${w}%;background:${color}"></i>`;
+      const pct = r[2] != null ? ` (${r[2].toFixed(1)}%)` : '';
+      return `<div class="sd-flow-row"><span class="fk">${r[0]}</span>
+        <span class="fbar">${bar}</span>
+        <span class="fv" style="color:${color}">${fmtAmt(r[1])}${pct}</span></div>`;
+    }).join('') + '</div>';
+  }
+  el.innerHTML = html;
+}
+
 export function showKline(code, name) {
   cur.code = code;
   cur.name = name || code.toUpperCase();
   document.getElementById('klineName').textContent = `${cur.name} · K线`;
   switchPage('kline');
   load();
+  loadDetail(code);
 }
 
 export function initKline() {

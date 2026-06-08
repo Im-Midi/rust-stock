@@ -49,6 +49,20 @@ export async function searchStocks(keyword) {
   } catch (e) { console.warn('搜索失败:', e); return []; }
 }
 
+export async function fetchSectors() {
+  if (!inTauri) return null;
+  try {
+    const s = await invoke('fetch_sectors');
+    return (Array.isArray(s) && s.length) ? s : null;
+  } catch (e) { console.warn('板块获取失败:', e); return null; }
+}
+
+export async function fetchFundFlow(code) {
+  if (!inTauri) return null;
+  try { return await invoke('fetch_fund_flow', { code }); }
+  catch (e) { console.warn('资金流获取失败:', e); return null; }
+}
+
 export async function classifyNews(titles) {
   if (!inTauri) return null;
   try {

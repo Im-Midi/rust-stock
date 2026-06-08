@@ -1,5 +1,5 @@
 // pages/market.js — 行情页：指数滚动条、市场情绪表盘（可翻面）、板块热力
-import { INDEX_CODES, fetchQuotes, fetchSentiment, explainSentiment, fetchStockNews, classifyNews } from '../api.js';
+import { INDEX_CODES, fetchQuotes, fetchSentiment, explainSentiment, fetchStockNews, classifyNews, fetchSectors } from '../api.js';
 import { state, today, aiReady } from '../store.js';
 import { storeGet, storeSet } from '../store.js';
 import { nowHMS, flashHint } from '../ui.js';
@@ -85,9 +85,24 @@ export async function renderSentiment() {
   }
 }
 
-export function renderHeat() {
+// 真实板块（取最强 4 + 最弱 2 凑 6 格）。失败回退演示数据。
+async function pickSectors() {
+  const all = await fetchSectors(); // 已按涨跌幅降序
+  if (!all || all.length < 6) return null;
+  const top = all.slice(0, 4);
+  const bottom = all.slice(-2);
+  return [...top, ...bottom].map(s => ({
+    name: s.name,
+    chg: (s.change_pct >= 0 ? '+' : '') + s.change_pct.toFixed(2) + '%',
+    v: Math.max(-1, Math.min(1, s.change_pct / 4)), // 映射到色深 ±4%
+  }));
+}
+
+export async function renderHeat() {
   const grid = document.getElementById('heatGrid');
-  grid.innerHTML = heat.map(h => {
+  let data = await pickSectors();
+  if (!data) data = heat; // 回退演示
+  grid.innerHTML = data.map(h => {
     const c = heatColor(h.v);
     return `<div class="heat-cell" style="background:${c.bg};border:1px solid ${c.border}">
       <span class="h-name">${h.name}</span>

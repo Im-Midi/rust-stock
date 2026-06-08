@@ -508,6 +508,19 @@
     margin-top: 8px;
   }
   .kline-info b { font-weight: 500; }
+  /* 个股详情：行情快照 + 资金流 */
+  #stockDetail { margin-top: 10px; }
+  .sd-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+  .sd-cell { background: var(--surface-2); border-radius: var(--radius-sm); padding: 7px 9px; }
+  .sd-cell .k { font-size: 9.5px; color: var(--txt-3); }
+  .sd-cell .v { font-size: 12px; font-family: 'DM Mono', monospace; font-weight: 500; margin-top: 1px; }
+  .sd-flow-title { font-size: 11px; color: var(--txt-2); margin: 8px 0 6px; }
+  .sd-flow { display: flex; flex-direction: column; gap: 5px; }
+  .sd-flow-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+  .sd-flow-row .fk { color: var(--txt-2); width: 64px; flex-shrink: 0; }
+  .sd-flow-row .fbar { flex: 1; height: 8px; background: var(--surface-3); border-radius: 4px; overflow: hidden; position: relative; }
+  .sd-flow-row .fbar i { position: absolute; top: 0; bottom: 0; display: block; }
+  .sd-flow-row .fv { font-family: 'DM Mono', monospace; width: 78px; text-align: right; flex-shrink: 0; }
 
   /* AI 聊天 */
   .chat-log { display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
@@ -746,6 +759,7 @@
           </div>
           <canvas id="klineCanvas" width="672" height="460"></canvas>
           <div class="kline-info" id="klineInfo"></div>
+          <div id="stockDetail"></div>
           <div class="set-note" id="klineMeta"></div>
         </div>
       </div>

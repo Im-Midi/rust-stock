@@ -7,6 +7,7 @@
 //   quote.rs  行情数据模型与解析器（含单测）
 
 mod ai;
+mod extra;
 mod feed;
 mod kline;
 mod quote;
@@ -71,6 +72,18 @@ async fn fetch_news() -> Result<Vec<feed::NewsItem>, String> {
 #[tauri::command]
 async fn fetch_sentiment() -> Result<feed::Sentiment, String> {
     feed::fetch_sentiment().await
+}
+
+/// 板块热力（行业板块涨跌幅，真实数据）
+#[tauri::command]
+async fn fetch_sectors() -> Result<Vec<extra::Sector>, String> {
+    extra::fetch_sectors().await
+}
+
+/// 个股资金流（主力/超大/大/中/小单净额）
+#[tauri::command]
+async fn fetch_fund_flow(code: String) -> Result<extra::FundFlow, String> {
+    extra::fetch_fund_flow(&code).await
 }
 
 /// 自选股相关快讯（行情页"自选股信息"卡片）
@@ -645,6 +658,8 @@ pub fn run() {
             fetch_news,
             fetch_stock_news,
             classify_news,
+            fetch_sectors,
+            fetch_fund_flow,
             fetch_sentiment,
             fetch_kline,
             ai_recommend,
