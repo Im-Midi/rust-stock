@@ -5,6 +5,7 @@ import { state, saveRecHistory, saveWatch, today, aiReady } from '../store.js';
 import { flashHint } from '../ui.js';
 import { inTauri } from '../bridge.js';
 import { showAnalysis } from './analysis.js';
+import { showKline } from './kline.js';
 import { getSentiment } from './market.js';
 
 const mockRecs = [
@@ -124,6 +125,7 @@ export function renderRecommend() {
           ? `<div class="r-chg ${r.change_pct >= 0 ? 'up-c' : 'down-c'}">今日 ${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%</div>`
           : ''}
       </div>
+      <button class="rec-kline" data-kline="${i}" title="看K线"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16"/><path d="M8 14l3-3 3 2 4-5"/></svg></button>
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
@@ -221,6 +223,13 @@ export function initRecommend() {
     // 一键加自选（在行点击之前拦截）
     const addBtn = e.target.closest('.rec-add');
     if (addBtn) { addToWatch(+addBtn.dataset.add); return; }
+    const kBtn = e.target.closest('.rec-kline');
+    if (kBtn) {
+      const recsK = inTauri ? state.recHistory[today()] : mockRecs;
+      const rk = recsK && recsK[+kBtn.dataset.kline];
+      if (rk) showKline(rk.code, rk.name);
+      return;
+    }
     const row = e.target.closest('.rec-row');
     if (!row) return;
     const tk = today();

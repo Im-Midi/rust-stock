@@ -56,5 +56,10 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ]
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
   }
 }
