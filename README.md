@@ -127,6 +127,13 @@ rust-stock/
 
 > 倒序排列，最新更新在最上方。每次代码更新都会同步追加到这里。
 
+## 2026-06-08（第三十一批：全面屏白边 + 系统栏遮挡修复）
+
+### 修复（edge-to-edge）
+- 根因：targetSdk=36 强制全面屏，`statusBarColor` 被忽略，内容被系统栏挤开后露出窗口背景（默认白）= 顶部白边；底部三键导航遮挡 UI 同理
+- 设深色窗口背景 `windowBackground=#0A0C10`（修白边）；MainActivity 加 `setOnApplyWindowInsetsListener` 把系统栏间距作为 padding 应用到内容区（状态栏/导航栏都不再遮挡）
+- 注：均为 gen/android 工程内定制（见 MEMORY 配方）
+
 ## 2026-06-08（第三十批：安卓状态栏深色 + 品牌启动图标）
 
 ### 修复
