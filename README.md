@@ -127,6 +127,12 @@ rust-stock/
 
 > 倒序排列，最新更新在最上方。每次代码更新都会同步追加到这里。
 
+## 2026-06-08（第二十六批：发布包体积优化）
+
+### 优化
+- Cargo `[profile.release]` 加体积优化：`strip`(剥符号) + `lto` + `opt-level="s"` + `codegen-units=1` + `panic="abort"`
+- 说明：debug universal 包约 640M（4 种 CPU 架构 + 不剥符号），属正常；实测建议——测试用 `--debug --target aarch64`（只编手机架构，约 1/4 体积），发布用 release 单架构（剥符号后再降一大截）
+
 ## 2026-06-08（第二十五批：安卓首个 APK 构建成功 🎉）
 
 ### 里程碑

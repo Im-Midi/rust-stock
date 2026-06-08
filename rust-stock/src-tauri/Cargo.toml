@@ -33,3 +33,11 @@ tauri-plugin-autostart = "2"
 [features]
 default = ["net"]
 net = []
+
+# 发布包体积优化（安卓/桌面通用）：剥符号 + LTO + 体积优先
+[profile.release]
+strip = true        # 剥离调试符号（APK/exe 显著变小）
+lto = true          # 链接期优化
+opt-level = "s"     # 偏向体积而非极致速度
+codegen-units = 1   # 更激进的跨模块优化
+panic = "abort"     # 去掉展开表，再省一点
