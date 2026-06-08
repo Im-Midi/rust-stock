@@ -127,6 +127,15 @@ rust-stock/
 
 > 倒序排列，最新更新在最上方。每次代码更新都会同步追加到这里。
 
+## 2026-06-08（第二十二批：安卓端准备——条件编译隔离）
+
+### 重构（为 Android 铺路）
+- Rust 用 `#[cfg(desktop)]` 隔离全部桌面专属能力：系统托盘、开机自启动、右侧挂件(band)、窗口置顶/最小化/吸附、窗口位置记忆——这些在 Android 上无意义或无法编译
+- 桌面窗口命令在移动端保留为空操作 stub（generate_handler 不变，前端调用不报错）
+- Cargo.toml：tauri-plugin-autostart 移到 `[target.'cfg(not(android/ios))'.dependencies]`
+- 全部业务能力（行情/AI/推荐/K线/资金流/SQLite/网络）平台无关，Android 原样复用
+- ⚠️ 此为安卓编译铺路，桌面 CI 验证桌面未受影响；Android 实际编译需本机装 Android Studio+NDK 后 `cargo tauri android init/build` 验证，可能有需迭代修正的项
+
 ## 2026-06-08（第二十一批：标题栏脑袋图标）
 
 ### 变更

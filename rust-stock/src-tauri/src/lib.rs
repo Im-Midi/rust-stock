@@ -15,12 +15,15 @@ mod sources;
 mod storage;
 
 use quote::Quote;
+use tauri::{Emitter, Manager, WebviewWindow};
+#[cfg(desktop)]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
+    PhysicalPosition, PhysicalSize,
 };
 
+#[cfg(desktop)]
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -32,7 +35,9 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 const EDGE_THRESHOLD: f64 = 24.0; // 距屏幕边缘多少像素触发吸附
+#[cfg(desktop)]
 const PEEK_WIDTH: f64 = 6.0; // 收起后露出的小条宽度
 
 // ============================================================
@@ -389,39 +394,59 @@ async fn ai_recommend(
 
 #[tauri::command]
 fn set_always_on_top(window: WebviewWindow, pinned: bool) {
+    #[cfg(desktop)]
     let _ = window.set_always_on_top(pinned);
+    #[cfg(not(desktop))]
+    let _ = (window, pinned);
 }
 
 #[tauri::command]
 fn minimize_window(window: WebviewWindow) {
+    #[cfg(desktop)]
     let _ = window.minimize();
+    #[cfg(not(desktop))]
+    let _ = window;
 }
 
 /// 最小化到系统托盘：藏主窗（托盘图标常驻，点图标/菜单可还原）
 #[tauri::command]
 fn hide_to_tray(window: WebviewWindow) {
-    let _ = window.hide();
-    if let Some(band) = window.app_handle().get_webview_window("band") {
-        let _ = band.hide();
+    #[cfg(desktop)]
+    {
+        let _ = window.hide();
+        if let Some(band) = window.app_handle().get_webview_window("band") {
+            let _ = band.hide();
+        }
     }
+    #[cfg(not(desktop))]
+    let _ = window;
 }
 
 /// 彻底退出应用
 #[tauri::command]
 fn quit_app(window: WebviewWindow) {
-    save_win_state(&window); // 退出前存一次窗口位置/大小
-    window.app_handle().exit(0);
+    #[cfg(desktop)]
+    {
+        save_win_state(&window); // 退出前存一次窗口位置/大小
+        window.app_handle().exit(0);
+    }
+    #[cfg(not(desktop))]
+    let _ = window;
 }
 
+#[cfg(desktop)]
 const BAND_W: f64 = 86.0; // 挂件逻辑宽度
 
 /// 缩小为屏幕右缘的竖排仪表盘挂件：隐藏主窗，band 窗贴右边显示。
 /// 挂件顶部有拖把手，用户可自行拖到任意位置。
 #[tauri::command]
 fn show_band(window: WebviewWindow) {
+    #[cfg(not(desktop))]
+    { let _ = window; return; }
+    #[cfg(desktop)]
+    {
     let app = window.app_handle();
     let Some(band) = app.get_webview_window("band") else { return };
-    // 已经显示过且被用户拖过 → 保持原位，只重新显示
     let first_show = !band.is_visible().unwrap_or(false);
     if first_show {
         if let Ok(Some(mon)) = window.current_monitor() {
@@ -439,34 +464,49 @@ fn show_band(window: WebviewWindow) {
     let _ = band.show();
     let _ = band.set_always_on_top(true);
     let _ = window.hide();
+    }
 }
 
 /// 挂件按自选数量自适应高度（band 前端渲染完调用，逻辑像素）
 #[tauri::command]
 fn resize_band(window: WebviewWindow, height: f64) {
+    #[cfg(not(desktop))]
+    { let _ = (window, height); return; }
+    #[cfg(desktop)]
+    {
     let Ok(Some(mon)) = window.current_monitor() else { return };
     let scale = mon.scale_factor();
     let w = (BAND_W * scale) as u32;
     let h = (height.clamp(70.0, 720.0) * scale) as u32;
     let _ = window.set_size(PhysicalSize::new(w, h));
+    }
 }
 
 /// 从横幅点击还原主窗
 #[tauri::command]
 fn restore_main(window: WebviewWindow) {
+    #[cfg(not(desktop))]
+    { let _ = window; return; }
+    #[cfg(desktop)]
+    {
     let app = window.app_handle();
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
         let _ = main.unminimize();
-        clamp_to_workarea(&main); // 防止还原到屏外位置（看起来像"点了没反应"）
+        clamp_to_workarea(&main);
         let _ = main.set_focus();
     }
-    let _ = window.hide(); // band 自己藏起来
+    let _ = window.hide();
+    }
 }
 
 /// 吸附到最近的屏幕边缘 / 展开
 #[tauri::command]
 fn toggle_dock_edge(window: WebviewWindow) {
+    #[cfg(not(desktop))]
+    { let _ = window; return; }
+    #[cfg(desktop)]
+    {
     let monitor = match window.current_monitor() {
         Ok(Some(m)) => m,
         _ => return,
@@ -499,11 +539,13 @@ fn toggle_dock_edge(window: WebviewWindow) {
     };
 
     let _ = window.set_position(PhysicalPosition::new(new_x, pos.y));
+    }
 }
 
 /// 保存窗口位置与大小（节流 400ms，关闭时强制保存）
 /// 注意：隐藏中的窗口（横幅模式）不能保存——Windows 给隐藏/最小化窗口
 /// 返回 -32000 占位坐标，存进去后下次启动窗口会被"恢复"到屏幕外。
+#[cfg(desktop)]
 fn save_win_state(window: &WebviewWindow) {
     if !window.is_visible().unwrap_or(false) {
         return;
@@ -520,6 +562,7 @@ fn save_win_state(window: &WebviewWindow) {
     let _ = storage::kv_set(&db, "win_state", &json);
 }
 
+#[cfg(desktop)]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -528,6 +571,7 @@ fn now_ms() -> u64 {
 }
 
 /// 把窗口位置夹回工作区可视范围（防止恢复到屏外/收起位导致"窗口消失"）
+#[cfg(desktop)]
 fn clamp_to_workarea(window: &WebviewWindow) {
     let mon = window
         .current_monitor()
@@ -563,6 +607,7 @@ fn clamp_to_workarea(window: &WebviewWindow) {
 }
 
 /// 启动时恢复上次的窗口位置与大小
+#[cfg(desktop)]
 fn restore_win_state(window: &WebviewWindow, db: &storage::Db) {
     let Ok(Some(s)) = storage::kv_get(db, "win_state") else { return };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else { return };
@@ -577,6 +622,7 @@ fn restore_win_state(window: &WebviewWindow, db: &storage::Db) {
 }
 
 /// 拖拽结束时自动吸附检测
+#[cfg(desktop)]
 fn snap_to_edge(window: &WebviewWindow) {
     let monitor = match window.current_monitor() {
         Ok(Some(m)) => m,
@@ -611,12 +657,13 @@ fn snap_to_edge(window: &WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
+    let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
+    builder
         .invoke_handler(tauri::generate_handler![
             set_always_on_top,
             minimize_window,
@@ -649,6 +696,11 @@ pub fn run() {
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
             let db = storage::init_db(data_dir).expect("初始化 SQLite 失败");
 
+            #[cfg(not(desktop))]
+            app.manage(db);
+
+            #[cfg(desktop)]
+            {
             // 系统托盘：左键点图标还原主窗，右键弹菜单（显示/退出）
             let show_i = MenuItem::with_id(app, "show", "显示主窗", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出 rust-stock", true, None::<&str>)?;
@@ -708,6 +760,8 @@ pub fn run() {
                 }
                 _ => {}
             });
+            } // end #[cfg(desktop)] setup block
+
             Ok(())
         })
         .run(tauri::generate_context!())
