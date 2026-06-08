@@ -1,7 +1,7 @@
 # rust-stock
 
 <p align="center">
-  <img src="rust-stock/src-tauri/icons/128x128.png" alt="rust-stock logo" width="84" />
+  <img src="logo.png" alt="rust-stock logo" width="140" />
 </p>
 
 <p align="center">
@@ -126,6 +126,11 @@ rust-stock/
 ## 更新日志
 
 > 倒序排列，最新更新在最上方。每次代码更新都会同步追加到这里。
+
+## 2026-06-08（第十九批：品牌 logo）
+
+### 变更
+- 启用新品牌 logo（独角兽抱金币袋 + Rust Stock 木牌）：从 1024×1024 源图生成全套应用图标（32/128/256/512 + ico/icns），替换原 R 方块；README 头图换为新 logo。安卓端打包时 `cargo tauri android init` 会自动用 icons/ 生成各密度 mipmap
 
 ## 2026-06-08（第十八批：今日推荐升级为多流派深度引擎）
 
