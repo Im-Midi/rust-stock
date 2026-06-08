@@ -66,12 +66,9 @@
     background: linear-gradient(180deg, var(--surface) 0%, rgba(18,21,28,.6) 100%);
     border-bottom: 1px solid var(--line-soft);
   }
-  .logo-dot {
-    width: 22px; height: 22px; border-radius: 7px;
-    background: linear-gradient(135deg, var(--accent), #7b5cff);
-    display: grid; place-items: center;
-    font-size: 12px; font-weight: 700; color: #fff;
-    box-shadow: 0 2px 10px rgba(77,141,255,.35);
+  .logo-img {
+    width: 24px; height: 24px; flex-shrink: 0;
+    border-radius: 6px; object-fit: contain;
   }
   .titlebar h1 { font-size: 13px; font-weight: 600; letter-spacing: .2px; flex: 1; }
   .titlebar h1 span { color: var(--txt-3); font-weight: 400; font-size: 11px; }
@@ -558,7 +555,7 @@
 
     <!-- 拖拽标题栏 -->
     <div class="titlebar" data-tauri-drag-region>
-      <div class="logo-dot">R</div>
+      <img class="logo-img" src="./logo.png" alt="rust-stock" />
       <h1>rust<span>-stock</span></h1>
       <div class="win-btns">
         <button class="win-btn" id="pinBtn" title="置顶">

@@ -31,6 +31,7 @@
     display: grid; place-items: center;
     color: #fff; font-size: 9px; font-weight: 700;
   }
+  .dot-img { width: 16px; height: 16px; border-radius: 4px; object-fit: contain; }
   .grip .lines { color: #5c6470; font-size: 10px; letter-spacing: 2px; }
   .list { flex: 1; overflow: hidden; padding: 2px 0; }
   .bs {
@@ -66,7 +67,7 @@
   </svg>
   <div class="panel">
     <div class="grip" data-tauri-drag-region title="拖动移动 · 双击返回主窗">
-      <div class="dot" data-tauri-drag-region>R</div>
+      <img class="dot-img" src="./logo.png" data-tauri-drag-region alt="" />
       <span class="lines" data-tauri-drag-region>⋮⋮</span>
     </div>
     <div class="list" id="list"><div class="empty">加载中…</div></div>
