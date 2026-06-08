@@ -127,6 +127,12 @@ rust-stock/
 
 > 倒序排列，最新更新在最上方。每次代码更新都会同步追加到这里。
 
+## 2026-06-08（第二十四批：安卓权限隔离——autostart 拆桌面专属 capability）
+
+### 修复（安卓交叉编译）
+- 安卓构建报 `Permission autostart:default not found`：autostart 插件未为安卓编译，但 capabilities 仍声明该权限
+- 拆分 capabilities：`default.json` 只留跨平台权限（core/shell）；新建 `desktop.json` 用 `platforms:[windows,linux,macOS]` 限定 `autostart:default` 仅桌面生效
+
 ## 2026-06-08（第二十三批：安卓 TLS 修复——reqwest 切 rustls）
 
 ### 修复（安卓交叉编译）
