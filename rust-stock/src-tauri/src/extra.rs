@@ -329,4 +329,63 @@ fn parse_lhb_codes(body: &str) -> std::collections::HashSet<String> {
 #[cfg(feature = "net")]
 async fn fetch_lhb_codes() -> std::collections::HashSet<String> {
     // 东财龙虎榜当日列表（取最近交易日，按上榜净额）
-    let url = "https://datacenter-web.eastmoney.com/api/data/v1/get?sortC
+    let url = "https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=TRADE_DATE&sortTypes=-1&pageSize=200&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=SECURITY_CODE&source=WEB&client=WEB";
+    match reqwest::Client::new().get(url).header("Referer", "https://data.eastmoney.com/").send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(t) => parse_lhb_codes(&t),
+            Err(_) => Default::default(),
+        },
+        Err(_) => Default::default(),
+    }
+}
+
+/// 候选池：涨幅榜 top + 主力净流入榜 top 合并去重，标记龙虎榜
+#[cfg(feature = "net")]
+pub async fn fetch_candidates() -> Result<Vec<Candidate>, String> {
+    let (gainers, inflow, lhb) = tokio::join!(
+        clist_rank("f3", 35),   // 涨幅榜
+        clist_rank("f62", 35),  // 主力净流入榜
+        fetch_lhb_codes(),
+    );
+    let mut map: std::collections::BTreeMap<String, Candidate> = std::collections::BTreeMap::new();
+    for mut c in gainers.into_iter().chain(inflow.into_iter()) {
+        // 龙虎榜标记（code 去前缀比对 6 位）
+        let code6 = &c.code[2..];
+        c.on_lhb = lhb.contains(code6);
+        map.entry(c.code.clone()).or_insert(c);
+    }
+    let out: Vec<Candidate> = map.into_values().collect();
+    if out.is_empty() {
+        return Err("候选池为空（榜单接口可能变了或非交易时段）".into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod cand_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_clist_stocks() {
+        let raw = r#"{"data":{"diff":[
+            {"f2":16.85,"f3":5.2,"f8":3.1,"f12":"600519","f13":1,"f14":"贵州茅台","f62":12345678.0},
+            {"f2":9.4,"f3":-1.2,"f8":8.0,"f12":"000001","f13":0,"f14":"平安银行","f62":-5000000.0},
+            {"f2":3.2,"f3":1.0,"f8":2.0,"f12":"000007","f13":0,"f14":"ST全新","f62":100.0}
+        ]}}"#;
+        let c = parse_clist_stocks(raw);
+        assert_eq!(c.len(), 2); // ST 过滤
+        assert_eq!(c[0].code, "sh600519");
+        assert!((c[0].change_pct - 5.2).abs() < 0.01);
+        assert_eq!(c[1].code, "sz000001");
+        assert!(c[1].change_pct < 0.0); // 下跌股保留（不淘汰）
+    }
+
+    #[test]
+    fn test_parse_lhb_codes() {
+        let raw = r#"{"result":{"data":[{"SECURITY_CODE":"600519"},{"SECURITY_CODE":"300750"}]}}"#;
+        let s = parse_lhb_codes(raw);
+        assert!(s.contains("600519"));
+        assert_eq!(s.len(), 2);
+        assert!(parse_lhb_codes("x").is_empty());
+    }
+}
