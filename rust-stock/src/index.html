@@ -430,6 +430,10 @@
   }
   .w-gauge:hover { background: var(--surface-3); }
   .w-gauge .needle-line { transition: transform .9s cubic-bezier(.22,1,.36,1); transform-box: view-box; }
+  /* 表盘指针随主题：白天黑、夜晚白（CSS 覆盖内联 SVG 属性）*/
+  #needle path, #anaNeedle path, .w-gauge .needle-line line { stroke: var(--txt); }
+  #needle circle, #anaNeedle circle, .w-gauge circle { fill: var(--txt); }
+  .w-gauge .needle-line.dim line { stroke: var(--txt-3); }
 
   /* AI 分析详情页 */
   .ana-txt {

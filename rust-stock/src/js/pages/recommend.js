@@ -121,8 +121,8 @@ export function renderRecommend() {
       </div>
       <div class="r-right">
         <div class="r-score ${up ? 'up-c' : 'down-c'}">${up ? '+' : ''}${r.score}</div>
-        ${typeof r.change_pct === 'number' && r.price !== 0
-          ? `<div class="r-chg ${r.change_pct >= 0 ? 'up-c' : 'down-c'}">今日 ${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%</div>`
+        ${r.price !== 0
+          ? `<div class="r-chg ${r.change_pct >= 0 ? 'up-c' : 'down-c'}">现价 ${r.price.toFixed(2)}　${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%</div>`
           : ''}
       </div>
       <canvas class="rec-spark" width="108" height="56" data-spark="${i}" title="点击看K线"></canvas>

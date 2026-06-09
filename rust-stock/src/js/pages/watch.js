@@ -54,7 +54,7 @@ function miniGauge(code, i) {
   return `<svg class="w-gauge" data-i="${i}" viewBox="0 0 48 30"><title>${tip}</title>
     <path d="M7 26 A17 17 0 0 1 41 26" fill="none" stroke="#1f2430" stroke-width="4" stroke-linecap="round"/>
     <path d="M7 26 A17 17 0 0 1 41 26" fill="none" stroke="url(#ggm)" stroke-width="4" stroke-linecap="round" opacity="${valid ? 0.95 : 0.3}"/>
-    <g class="needle-line" transform="rotate(${deg} 24 26)">
+    <g class="needle-line${valid ? '' : ' dim'}" transform="rotate(${deg} 24 26)">
       <line x1="24" y1="26" x2="24" y2="11.5" stroke="${valid ? '#e8ecf2' : '#5c6470'}" stroke-width="2" stroke-linecap="round"/>
     </g>
     <circle cx="24" cy="26" r="2.4" fill="#e8ecf2"/>
