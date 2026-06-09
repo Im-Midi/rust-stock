@@ -256,4 +256,14 @@ function openWatchNews(i) {
 }
 
 export function initMarket() {
-  document.getElementById('feed').addEventListene
+  document.getElementById('feed').addEventListener('click', (e) => {
+    const row = e.target.closest('.feed-item');
+    if (row && row.dataset.i != null) openWatchNews(+row.dataset.i);
+  });
+  document.getElementById('sentFront').addEventListener('click', openSentWhy);
+  document.getElementById('sentBackBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('sentFlip').classList.remove('flipped');
+  });
+  if (!inTauri) console.log('[preview] 浏览器预览模式，行情/情绪走 mock');
+}
