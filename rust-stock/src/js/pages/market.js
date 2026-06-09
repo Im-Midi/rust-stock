@@ -116,13 +116,20 @@ export async function renderHeat() {
   let data = await pickSectors();
   const real = !!data;
   if (!data) data = heat; // 回退演示
-  grid.innerHTML = data.map(h => {
+  grid.innerHTML = data.map(h =>
+    `<div class="heat-cell"><span class="h-name">${h.name}</span><span class="h-chg">${h.chg}</span></div>`
+  ).join('');
+  // 用 JS 赋值上色（CSSOM 不受 CSP 拦截，HTML 内联 style 在安卓会被 CSP 拦掉）
+  const cells = grid.querySelectorAll('.heat-cell');
+  data.forEach((h, i) => {
     const c = heatColor(h.v);
-    return `<div class="heat-cell" style="background:${c.bg};border:1px solid ${c.border}">
-      <span class="h-name">${h.name}</span>
-      <span class="h-chg" style="color:${c.fg}">${h.chg}</span>
-    </div>`;
-  }).join('');
+    const cell = cells[i];
+    if (!cell) return;
+    cell.style.background = c.bg;
+    cell.style.border = `1px solid ${c.border}`;
+    const chg = cell.querySelector('.h-chg');
+    if (chg) chg.style.color = c.fg;
+  });
   const meta = document.getElementById('heatMeta');
   if (meta) meta.textContent = real ? nowHMS() : (sectorErr ? '演示·' + sectorErr : '演示数据');
 }
@@ -249,9 +256,4 @@ function openWatchNews(i) {
 }
 
 export function initMarket() {
-  document.getElementById('feed').addEventListener('click', (e) => {
-    const row = e.target.closest('.feed-item');
-    if (row && row.dataset.i != null) openWatchNews(+row.dataset.i);
-  });
-  document.getElementById('sentFront').addEventListener('click', openSentWhy);
-  document.getElementById('sentBackBtn').addEventListener('click', (e) => {
+  document.getElementById('feed').addEventListene

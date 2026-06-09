@@ -199,17 +199,27 @@ async function loadDetail(code) {
       const inflow = val >= 0;
       // 非零值给最小 6% 宽度，保证肉眼可见
       const w = val === 0 ? 0 : Math.max(6, Math.min(50, Math.abs(val) / max * 50));
-      const color = inflow ? '#ff4d4f' : '#14c87d';
-      // 全内联样式（不依赖 CSS 规则），杜绝 position/颜色不生效导致条不显示
-      const bar = `<i style="position:absolute;top:0;bottom:0;display:block;${inflow ? 'left:50%' : 'right:50%'};width:${w}%;background:${color};border-radius:3px"></i>`;
+      const cls = inflow ? 'up-c' : 'down-c';
       const p2 = Number(r[2]);
       const pct = (Number.isFinite(p2) && p2 !== 0) ? ` (${p2 >= 0 ? '+' : ''}${p2.toFixed(2)}%)` : '';
+      // 用 class + data，颜色/定位插入后由 JS(CSSOM) 赋值（不受 CSP 拦截）
       return `<div class="sd-flow-row"><span class="fk">${r[0]}</span>
-        <span class="fbar">${bar}</span>
-        <span class="fv" style="color:${color}">${fmtAmt(val)}${pct}</span></div>`;
+        <span class="fbar"><i class="fbar-fill" data-w="${w}" data-inflow="${inflow ? 1 : 0}"></i></span>
+        <span class="fv ${cls}">${fmtAmt(val)}${pct}</span></div>`;
     }).join('') + '</div>';
   }
   el.innerHTML = html;
+  // 资金流条上色：逐属性 CSSOM 赋值，绕过 CSP 对内联 style 的拦截
+  el.querySelectorAll('.fbar-fill').forEach(fill => {
+    const w = Number(fill.dataset.w) || 0;
+    const inflow = fill.dataset.inflow === '1';
+    const s = fill.style;
+    s.position = 'absolute'; s.top = '0'; s.bottom = '0'; s.display = 'block';
+    s[inflow ? 'left' : 'right'] = '50%';
+    s.width = w + '%';
+    s.background = inflow ? '#ff4d4f' : '#14c87d';
+    s.borderRadius = '3px';
+  });
 }
 
 export function showKline(code, name) {
@@ -300,12 +310,4 @@ export function initKline() {
         tpan.axis = dx > dy ? 'x' : 'y';
       }
       if (tpan.axis === 'y') return;          // 竖扫：交给页面滚动
-      e.preventDefault();                     // 横扫：平移K线
-      const dIdx = Math.round((tpan.x - tx) / rect.width * view.count);
-      const ns = Math.max(0, Math.min(data.length - view.count, tpan.start + dIdx));
-      if (ns !== view.start) { view.start = ns; draw(); }
-    }
-  }, { passive: false });
-
-  cv.addEventListener('touchend', (e) => {
-    
+      e.pre
