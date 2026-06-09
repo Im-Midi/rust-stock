@@ -64,6 +64,18 @@ fn root_cause(e: &dyn std::error::Error) -> String {
     msg
 }
 
+// 东财专用客户端：关 gzip → 响应带 Content-Length、明文，可干净读完；
+// （gzip 流式响应在 rustls 下，服务器不发 close_notify 收尾会被误判为错误）。
+#[cfg(feature = "net")]
+fn em_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+        .timeout(std::time::Duration::from_secs(12))
+        .no_gzip()
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[cfg(feature = "net")]
 pub async fn fetch_sectors() -> Result<Vec<Sector>, String> {
     // m:90 t:2 = 行业板块；按涨跌幅 f3 降序
@@ -71,11 +83,7 @@ pub async fn fetch_sectors() -> Result<Vec<Sector>, String> {
     // 配 UA + 超时；启动时多请求并发，连接易抖动 → 重试 3 次
     // 用默认客户端(允许 HTTP/2)：h2 用帧明确结束响应，TCP 收尾不发 close_notify 也不报错
     // （东财 clist 在 h1 close-delimited 下会触发 rustls close_notify 误判）。
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(|e| format!("板块客户端构建失败: {e}"))?;
+    let client = em_client();
     let mut last = String::from("未知错误");
     for attempt in 0..3 {
         match client
@@ -294,7 +302,7 @@ async fn clist_rank(fid: &str, pz: u32) -> Vec<Candidate> {
          &fid={fid}&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:7,m:1+t:3\
          &fields=f2,f3,f8,f12,f13,f14,f62&ut=bd1d9ddb04089700cf9c27f6f7426281"
     );
-    match reqwest::Client::new()
+    match em_client()
         .get(&url)
         .header("Referer", "https://quote.eastmoney.com/")
         .send()
@@ -327,7 +335,7 @@ fn parse_lhb_codes(body: &str) -> std::collections::HashSet<String> {
 async fn fetch_lhb_codes() -> std::collections::HashSet<String> {
     // 东财龙虎榜当日列表（取最近交易日，按上榜净额）
     let url = "https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=TRADE_DATE&sortTypes=-1&pageSize=200&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=SECURITY_CODE&source=WEB&client=WEB";
-    match reqwest::Client::new().get(url).header("Referer", "https://data.eastmoney.com/").send().await {
+    match em_client().get(url).header("Referer", "https://data.eastmoney.com/").send().await {
         Ok(resp) => match resp.text().await {
             Ok(t) => parse_lhb_codes(&t),
             Err(_) => Default::default(),
