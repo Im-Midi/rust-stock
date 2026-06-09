@@ -19,19 +19,6 @@ import { initAnalysis } from './js/pages/analysis.js';
 import { initKline } from './js/pages/kline.js';
 import { renderRecommend, initRecommend } from './js/pages/recommend.js';
 
-// ===== 临时诊断：把未捕获错误显示在屏幕顶部（排查完会移除）=====
-function __showErr(msg) {
-  let d = document.getElementById('__err');
-  if (!d) {
-    d = document.createElement('div');
-    d.id = '__err';
-    d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#b00020;color:#fff;font:11px monospace;padding:8px;white-space:pre-wrap;word-break:break-all;max-height:70vh;overflow:auto';
-    (document.body || document.documentElement).appendChild(d);
-  }
-  d.textContent += msg + '\n';
-}
-window.addEventListener('error', (e) => __showErr('ERR: ' + (e.message || '') + ' @ ' + ((e.filename || '').split('/').pop()) + ':' + e.lineno));
-window.addEventListener('unhandledrejection', (e) => __showErr('REJECT: ' + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
 
 // ---------- 窗口控制 ----------
 function initWindowControls() {

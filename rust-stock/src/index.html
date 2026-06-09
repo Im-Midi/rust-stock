@@ -4,18 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
 <title>rust-stock</title>
-<script>
-(function(){
-  function show(m){
-    var d=document.getElementById('__err');
-    if(!d){d=document.createElement('div');d.id='__err';d.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;background:#b00020;color:#fff;font:11px monospace;padding:8px;white-space:pre-wrap;word-break:break-all;max-height:75vh;overflow:auto';}
-    d.textContent+=m+'\n';
-    if(!d.parentNode)(document.body||document.documentElement).appendChild(d);
-  }
-  window.addEventListener('error',function(e){show('ERR: '+(e.message||(e.target&&e.target.src)||'load fail')+' @ '+((e.filename||'').split('/').pop())+':'+(e.lineno||''));},true);
-  window.addEventListener('unhandledrejection',function(e){show('REJECT: '+((e.reason&&(e.reason.stack||e.reason.message))||e.reason));});
-})();
-</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
