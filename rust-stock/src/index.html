@@ -321,6 +321,22 @@
   .m-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .m-btn.danger { color: var(--up); border-color: rgba(255,77,79,.4); }
   .m-btn.primary:hover { filter: brightness(1.1); background: var(--accent); }
+  /* 深度调研收藏 */
+  .save-bar { display: none; padding: 6px 12px 0; gap: 8px; align-items: center; }
+  .save-bar.show { display: flex; }
+  .save-res-btn { flex: 1; height: 32px; border: 1px solid var(--accent); border-radius: 9px; background: var(--surface-2); color: var(--accent); font-size: 12px; font-family: 'Sora',sans-serif; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+  .save-res-btn:active { background: var(--surface-3); }
+  .fav-open-btn { height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); color: var(--txt-2); font-size: 12px; cursor: pointer; }
+  .group-pick-btn { width: 100%; text-align: left; }
+  .fav-group { margin-bottom: 14px; }
+  .fav-group h4 { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .fav-group h4 .ren { font-size: 10px; color: var(--txt-3); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; cursor: pointer; }
+  .fav-item { background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+  .fav-item .fi-head { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--txt-3); margin-bottom: 4px; }
+  .fav-item .fi-del { color: var(--up); cursor: pointer; font-style: normal; }
+  .fav-item .fi-text { font-size: 11px; line-height: 1.55; color: var(--txt-2); max-height: 54px; overflow: hidden; white-space: pre-wrap; cursor: pointer; }
+  .fav-item.expanded .fi-text { max-height: none; }
+  .fav-empty { font-size: 11px; color: var(--txt-3); padding: 4px 0; }
 
   .nav { display: flex; padding: 4px 8px 8px; background: var(--glass); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border-top: 1px solid var(--line-soft); }
   .nav-item {
@@ -880,6 +896,10 @@
 
     <!-- 底部 dock -->
     <div class="dock">
+      <div class="save-bar" id="saveBar">
+        <button class="save-res-btn" id="saveResBtn"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg> 把本次调研加入分组</button>
+        <button class="fav-open-btn" id="favBtn" title="调研收藏">收藏</button>
+      </div>
       <div class="ai-bar">
         <button class="mode-btn" id="deepBtn" title="深度调研模式：产业链八层拆解">研</button>
         <input class="ai-input" id="aiInput" placeholder="问问 AI 助手…" />
@@ -908,6 +928,21 @@
     </div>
 
     <!-- 关闭确认对话框 -->
+    <div class="modal-mask" id="groupModal">
+      <div class="modal">
+        <div class="modal-title">把本次深度调研加入分组</div>
+        <div class="modal-msg">选择一个分组保存（含全文与保存时间，永久存本机）。改名在「收藏」里。</div>
+        <div class="modal-btns" id="groupPick"></div>
+        <button class="m-btn" id="groupCancel" style="margin-top:8px">取消</button>
+      </div>
+    </div>
+    <div class="modal-mask" id="favModal">
+      <div class="modal" style="max-height:82vh;overflow:auto;width:300px">
+        <div class="modal-title">调研收藏</div>
+        <div id="favBody"></div>
+        <button class="m-btn" id="favClose" style="margin-top:10px">关闭</button>
+      </div>
+    </div>
     <div class="modal-mask" id="closeModal">
       <div class="modal">
         <div class="modal-title">关闭 rust-stock</div>
