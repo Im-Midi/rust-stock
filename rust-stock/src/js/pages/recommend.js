@@ -129,7 +129,7 @@ export function renderRecommend() {
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
-  note.textContent = '右侧缩略图＝近30日「收盘价折线」（真实日K收盘价连线，点击看完整日K）。本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
+  note.innerHTML = '右侧缩略图＝<span class="spark-label">近30日收盘价折线</span>（真实日K收盘价连线，点击看完整日K）。本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
   drawSparks(recs);
 }
 
@@ -242,5 +242,4 @@ async function togglePerf() {
   if (perfCache) { renderPerf(perfCache); return; }
   if (!inTauri) {
     renderPerf({ rows: [
-      { day: '2026-06-04', name: '贵州茅台', score: 72, ret: 4.12 },
-      { day: '2026-
+      { day: '2026-06-04', name: '贵州茅台', score: 72, ret: 4.1
