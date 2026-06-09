@@ -98,13 +98,12 @@ async function pickSectors() {
     sectorErr = String(e).replace(/^Error:\s*/, '').slice(0, 80);
     return null;
   }
-  if (!Array.isArray(all) || all.length < 6) {
+  if (!Array.isArray(all) || all.length < 3) {
     if (Array.isArray(all)) sectorErr = `仅返回 ${all.length} 个板块`;
     return null;
   }
-  const top = all.slice(0, 4);
-  const bottom = all.slice(-2);
-  return [...top, ...bottom].map(s => ({
+  const picked = all.length <= 6 ? all : [...all.slice(0, 4), ...all.slice(-2)];
+  return picked.map(s => ({
     name: s.name,
     chg: (s.change_pct >= 0 ? '+' : '') + s.change_pct.toFixed(2) + '%',
     v: Math.max(-1, Math.min(1, s.change_pct / 4)), // 映射到色深 ±4%
@@ -251,7 +250,7 @@ export function renderWatchNews() {
 function openWatchNews(i) {
   const n = (watchNews || [])[i];
   if (!n || !n.url) return;
-  if (inTauri) invoke('plugin:shell|open', { path: n.url }).catch(e => console.warn('打开失败:', e));
+  if (inTauri) invoke('plugin:opener|open_url', { url: n.url }).catch(e => console.warn('打开失败:', e));
   else window.open(n.url, '_blank');
 }
 

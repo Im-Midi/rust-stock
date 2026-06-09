@@ -1,6 +1,6 @@
 // pages/recommend.js — 今日 AI 推荐：详尽分析后推荐 3 支
 // 历史按日存 SQLite（rec_history），连续 ≥7 个推荐日出现同一支 → ★ 标识并注明天数
-import { aiRecommend, fetchKline } from '../api.js';
+import { aiRecommend, fetchKline, fetchQuotes } from '../api.js';
 import { state, saveRecHistory, saveWatch, today, aiReady } from '../store.js';
 import { flashHint } from '../ui.js';
 import { inTauri } from '../bridge.js';
@@ -15,6 +15,7 @@ const mockRecs = [
 ];
 
 let pending = false;
+let recPrices = {}; // code -> {price,change_pct} 实时行情(独立于候选池)
 
 // 连续推荐天数：从最近的推荐日往前数，必须每个推荐日都包含该股
 function streakOf(code) {
@@ -84,7 +85,7 @@ async function generate(force = false, manual = false) {
   }
 }
 
-export function renderRecommend() {
+export function renderRecommend(skipFill) {
   const list = document.getElementById('recList');
   const note = document.getElementById('recNote');
   const meta = document.getElementById('recMeta');
@@ -113,6 +114,9 @@ export function renderRecommend() {
     const starred = streak >= 7;
     const up = r.score >= 0;
     const inWl = state.watchlist.includes(r.code);
+    const lp = recPrices[r.code];
+    const price = lp ? lp.price : r.price;
+    const chg = lp ? lp.change_pct : (r.change_pct || 0);
     return `<div class="rec-row" data-i="${i}">
       <div class="r-rank">${i + 1}</div>
       <div class="r-name">
@@ -121,9 +125,9 @@ export function renderRecommend() {
       </div>
       <div class="r-right">
         <div class="r-score ${up ? 'up-c' : 'down-c'}">${up ? '+' : ''}${r.score}</div>
-        ${r.price !== 0
-          ? `<div class="r-chg ${r.change_pct >= 0 ? 'up-c' : 'down-c'}">现价 ${r.price.toFixed(2)}　${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%</div>`
-          : ''}
+        ${price
+          ? `<div class="r-chg ${chg >= 0 ? 'up-c' : 'down-c'}">现价 ${price.toFixed(2)}　${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</div>`
+          : `<div class="r-chg" style="color:var(--txt-3)">现价加载中…</div>`}
       </div>
       <canvas class="rec-spark" width="108" height="56" data-spark="${i}" title="点击看K线"></canvas>
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
@@ -131,6 +135,17 @@ export function renderRecommend() {
   }).join('');
   note.innerHTML = '右侧缩略图＝<span class="spark-label">近30日收盘价折线</span>（真实日K收盘价连线，点击看完整日K）。本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
   drawSparks(recs);
+  if (!skipFill && inTauri) fillRecPrices(recs);
+}
+
+// 给每支推荐拉真实实时行情，显示现价（独立于会失败的候选池）
+async function fillRecPrices(recs) {
+  const codes = [...new Set(recs.map(r => r.code))];
+  if (!codes.length) return;
+  const quotes = await fetchQuotes(codes);
+  if (!quotes || !quotes.length) return;
+  quotes.forEach(q => { recPrices[q.code] = { price: q.price, change_pct: q.change_pct }; });
+  renderRecommend(true);
 }
 
 // ---------- 每支推荐的真实近30日「收盘价折线」缩略图（点击进完整日K）----------

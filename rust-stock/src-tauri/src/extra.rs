@@ -79,55 +79,25 @@ fn em_client() -> reqwest::Client {
 
 #[cfg(feature = "net")]
 pub async fn fetch_sectors() -> Result<Vec<Sector>, String> {
-    // m:90 t:2 = 行业板块；按涨跌幅 f3 降序
-    let url = "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=60&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f3,f12,f14&ut=bd1d9ddb04089700cf9c27f6f7426281";
-    // 配 UA + 超时；启动时多请求并发，连接易抖动 → 重试 3 次
-    // 用默认客户端(允许 HTTP/2)：h2 用帧明确结束响应，TCP 收尾不发 close_notify 也不报错
-    // （东财 clist 在 h1 close-delimited 下会触发 rustls close_notify 误判）。
-    let client = em_client();
-    let mut last = String::from("未知错误");
-    for attempt in 0..3 {
-        match client
-            .get(url)
-            .header("Referer", "https://quote.eastmoney.com/")
-            .send()
-            .await
-        {
-            Ok(mut resp) => {
-                // 手动累积 body：东财 clist 收完整 JSON 后不发 TLS close_notify 就断，
-                // rustls 判错（http1_only 也救不了）。这里拿到完整 body 即用，忽略尾部 unclean close。
-                let mut buf: Vec<u8> = Vec::new();
-                let mut chunk_err: Option<reqwest::Error> = None;
-                loop {
-                    match resp.chunk().await {
-                        Ok(Some(c)) => buf.extend_from_slice(&c),
-                        Ok(None) => break,
-                        Err(e) => {
-                            chunk_err = Some(e);
-                            break;
-                        }
-                    }
-                }
-                if !buf.is_empty() {
-                    let text = String::from_utf8_lossy(&buf);
-                    let list = parse_sectors(&text);
-                    if !list.is_empty() {
-                        return Ok(list);
-                    }
-                    last = "板块解析为空（接口字段可能变了）".into();
-                } else if let Some(e) = chunk_err {
-                    last = format!("板块读取失败: {}", root_cause(&e));
-                } else {
-                    last = "板块响应为空".into();
-                }
-            }
-            Err(e) => last = format!("板块请求失败: {}", root_cause(&e)),
-        }
-        if attempt < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
+    // clist 板块列表接口在 rustls 下报 close_notify；改用 ulist.np（与资金流同接口，正常）
+    // + 固定主要行业板块 secid 列表拉实时涨跌，板块名称由接口返回。
+    let secids = "90.BK0475,90.BK0464,90.BK0727,90.BK0473,90.BK0438,90.BK0447,90.BK0448,90.BK0428,90.BK0737,90.BK0421,90.BK0477,90.BK0459,90.BK0729,90.BK0910";
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids={secids}&fields=f2,f3,f12,f14"
+    );
+    let resp = em_client()
+        .get(&url)
+        .header("Referer", "https://quote.eastmoney.com/")
+        .send()
+        .await
+        .map_err(|e| format!("板块请求失败: {}", root_cause(&e)))?;
+    let text = resp.text().await.map_err(|e| format!("板块读取失败: {}", root_cause(&e)))?;
+    let mut list = parse_sectors(&text);
+    if list.is_empty() {
+        return Err("板块解析为空".into());
     }
-    Err(last)
+    list.sort_by(|a, b| b.change_pct.partial_cmp(&a.change_pct).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(list)
 }
 
 // ============================================================

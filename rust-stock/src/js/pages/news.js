@@ -46,7 +46,7 @@ export function renderFeed(targetId = 'feed') {
 function openNews(i) {
   const n = newsData[i];
   if (!n || !n.url) return;
-  if (inTauri) invoke('plugin:shell|open', { path: n.url }).catch(e => console.warn('打开失败:', e));
+  if (inTauri) invoke('plugin:opener|open_url', { url: n.url }).catch(e => console.warn('打开失败:', e));
   else window.open(n.url, '_blank');
 }
 
