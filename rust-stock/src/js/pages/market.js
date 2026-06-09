@@ -26,12 +26,14 @@ const heat = [
 ];
 
 function heatColor(v) {
+  v = Number(v) || 0; // 防 NaN（NaN 会让 rgba 失效=无底色）
+  // 提高最小可见度：基础 0.24 + 随幅度增强，真实板块小涨跌也有明显红绿底
+  const a = 0.24 + Math.min(0.5, Math.abs(v) * 0.55);
+  const bd = Math.min(0.95, a + 0.25);
   if (v >= 0) {
-    const a = 0.12 + v * 0.22;
-    return { bg: `rgba(255,77,79,${a})`, fg: '#ff7173', border: `rgba(255,77,79,${a + 0.1})` };
+    return { bg: `rgba(255,77,79,${a})`, fg: '#ff9a9b', border: `rgba(255,77,79,${bd})` };
   }
-  const a = 0.12 + (-v) * 0.22;
-  return { bg: `rgba(20,200,125,${a})`, fg: '#3fd99a', border: `rgba(20,200,125,${a + 0.1})` };
+  return { bg: `rgba(20,200,125,${a})`, fg: '#7ee3b4', border: `rgba(20,200,125,${bd})` };
 }
 
 export async function renderTicker() {
@@ -253,8 +255,3 @@ export function initMarket() {
   });
   document.getElementById('sentFront').addEventListener('click', openSentWhy);
   document.getElementById('sentBackBtn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    document.getElementById('sentFlip').classList.remove('flipped');
-  });
-  if (!inTauri) console.log('[preview] 浏览器预览模式，行情/情绪走 mock');
-}

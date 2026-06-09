@@ -125,11 +125,52 @@ export function renderRecommend() {
           ? `<div class="r-chg ${r.change_pct >= 0 ? 'up-c' : 'down-c'}">今日 ${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%</div>`
           : ''}
       </div>
-      <button class="rec-kline" data-kline="${i}" title="看K线"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16"/><path d="M8 14l3-3 3 2 4-5"/></svg></button>
+      <canvas class="rec-spark" width="108" height="56" data-spark="${i}" title="点击看K线"></canvas>
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
   note.textContent = '本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
+  drawSparks(recs);
+}
+
+// ---------- 每支推荐的近 30 日 K线缩略图（点击进完整K线）----------
+const sparkCache = {}; // code -> 收盘价数组（会话内缓存，避免重复抓）
+async function drawSparks(recs) {
+  for (let i = 0; i < recs.length; i++) {
+    const cv = document.querySelector(`canvas.rec-spark[data-spark="${i}"]`);
+    if (!cv) continue;
+    const code = recs[i].code;
+    let closes = sparkCache[code];
+    if (!closes) {
+      const k = await fetchKline(code, 'day', 30);
+      if (!k || !k.length) continue;
+      closes = k.map(c => c.close);
+      sparkCache[code] = closes;
+    }
+    drawSpark(cv, closes);
+  }
+}
+function drawSpark(cv, closes) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  if (closes.length < 2) return;
+  const hi = Math.max(...closes), lo = Math.min(...closes), span = hi - lo || 1;
+  const up = closes[closes.length - 1] >= closes[0];
+  const color = up ? '#ff4d4f' : '#14c87d';
+  const pad = 4;
+  const xy = (c, i) => [pad + i / (closes.length - 1) * (W - pad * 2), H - pad - (c - lo) / span * (H - pad * 2)];
+  // 填充
+  ctx.beginPath();
+  closes.forEach((c, i) => { const [x, y] = xy(c, i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  const [lx] = xy(closes[closes.length - 1], closes.length - 1);
+  ctx.lineTo(lx, H); ctx.lineTo(pad, H); ctx.closePath();
+  ctx.fillStyle = up ? 'rgba(255,77,79,.14)' : 'rgba(20,200,125,.14)';
+  ctx.fill();
+  // 折线
+  ctx.beginPath();
+  closes.forEach((c, i) => { const [x, y] = xy(c, i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
 }
 
 function addToWatch(i) {
@@ -208,44 +249,4 @@ async function togglePerf() {
   perfBusy = true;
   el.innerHTML = '<div class="rec-empty">⏳ 正在用K线回算历史推荐表现…</div>';
   try {
-    perfCache = await computePerf();
-    renderPerf(perfCache);
-  } catch (e) {
-    el.innerHTML = '<div class="rec-empty">回算失败：' + e + '</div>';
-  } finally {
-    perfBusy = false;
-  }
-}
-
-export function initRecommend() {
-  document.getElementById('recPerf').addEventListener('click', togglePerf);
-  document.getElementById('recList').addEventListener('click', (e) => {
-    // 一键加自选（在行点击之前拦截）
-    const addBtn = e.target.closest('.rec-add');
-    if (addBtn) { addToWatch(+addBtn.dataset.add); return; }
-    const kBtn = e.target.closest('.rec-kline');
-    if (kBtn) {
-      const recsK = inTauri ? state.recHistory[today()] : mockRecs;
-      const rk = recsK && recsK[+kBtn.dataset.kline];
-      if (rk) showKline(rk.code, rk.name);
-      return;
-    }
-    const row = e.target.closest('.rec-row');
-    if (!row) return;
-    const tk = today();
-    const recs = inTauri ? state.recHistory[tk] : mockRecs;
-    const r = recs && recs[+row.dataset.i];
-    if (!r) return;
-    const streak = inTauri ? streakOf(r.code) : 0;
-    showAnalysis({
-      title: `${r.name} · AI 推荐`,
-      score: r.score,
-      text: r.reason,
-      meta: `${r.code.toUpperCase()} · 今日推荐${streak >= 7 ? ` · ★ 已连续 ${streak} 日` : ''} · 仅供参考，不构成投资建议`,
-      back: 'market',
-    });
-  });
-  document.getElementById('recRefresh').addEventListener('click', () => generate(true, true));
-  // 启动后自动生成（当天没有才生成）
-  generate(false);
-}
+    perfC

@@ -89,6 +89,7 @@
   body.mobile .titlebar {
     height: calc(48px + env(safe-area-inset-top, 0px));
     padding-top: env(safe-area-inset-top, 0px);       /* 避开状态栏/刘海 */
+    background: #12151C;                                /* 纯色，与状态栏区(MainActivity内容底色)无缝，去掉"黑边"感 */
   }
   body.mobile .nav {
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); /* 避开底部手势条 */
@@ -476,15 +477,14 @@
   }
   .rec-row .rec-add:hover { color: #fff; background: var(--accent); border-color: var(--accent); }
   .rec-row .rec-add.added { color: var(--down); border-color: rgba(20,200,125,.4); background: transparent; cursor: default; }
-  .rec-row .rec-kline {
-    width: 22px; height: 22px; flex-shrink: 0;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: var(--surface-2); color: var(--txt-2);
-    display: grid; place-items: center; cursor: pointer;
-    transition: all .15s;
+  .rec-row .rec-spark {
+    width: 54px; height: 28px; flex-shrink: 0;
+    border: 1px solid var(--line); border-radius: 5px;
+    background: var(--surface-2); cursor: pointer;
+    transition: border-color .15s;
   }
-  .rec-row .rec-kline:hover { color: #fff; background: var(--accent); border-color: var(--accent); }
-  .rec-row .rec-kline:active { background: var(--surface-3); }
+  .rec-row .rec-spark:hover { border-color: var(--accent); }
+  .rec-row .rec-spark:active { opacity: .7; }
   .rec-refresh {
     border: none; background: transparent; color: var(--txt-3);
     font-size: 10px; cursor: pointer; font-family: 'Sora', sans-serif;
@@ -877,6 +877,4 @@
 
   </div>
 
-  <script type="module" src="./main.js"></script>
-</body>
-</html>
+  <script type="module" src="./main.js"
