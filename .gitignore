@@ -1,20 +1,9 @@
 # Rust / Tauri
 rust-stock/src-tauri/target/
-rust-stock/src-tauri/gen/schemas/
+rust-stock/src-tauri/gen/
+# 注：gen/android 是生成的安卓工程（含本机定制：状态栏/图标/MainActivity），
+# 不入库；重跑 cargo tauri android init 会重建，定制需按 MEMORY 配方重做。
 
 # 本地数据库 / 运行时产物
 *.db
-*.db-journal
-
-# 系统杂物
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# 编辑器
-.vscode/
-.idea/
-
-# 本地工作文档（开发者要求：永不同步到 GitHub）
-MEMORY.md
-PITFALLS.md
+*.db-

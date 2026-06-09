@@ -85,10 +85,21 @@ export async function renderSentiment() {
   }
 }
 
-// 真实板块（取最强 4 + 最弱 2 凑 6 格）。失败回退演示数据。
+// 真实板块（取最强 4 + 最弱 2 凑 6 格）。失败回退演示数据并记录原因。
+let sectorErr = '';
 async function pickSectors() {
-  const all = await fetchSectors(); // 已按涨跌幅降序
-  if (!all || all.length < 6) return null;
+  sectorErr = '';
+  let all;
+  try {
+    all = inTauri ? await invoke('fetch_sectors') : null;
+  } catch (e) {
+    sectorErr = String(e).replace(/^Error:\s*/, '').slice(0, 80);
+    return null;
+  }
+  if (!Array.isArray(all) || all.length < 6) {
+    if (Array.isArray(all)) sectorErr = `仅返回 ${all.length} 个板块`;
+    return null;
+  }
   const top = all.slice(0, 4);
   const bottom = all.slice(-2);
   return [...top, ...bottom].map(s => ({
@@ -111,7 +122,7 @@ export async function renderHeat() {
     </div>`;
   }).join('');
   const meta = document.getElementById('heatMeta');
-  if (meta) meta.textContent = real ? nowHMS() : '演示数据';
+  if (meta) meta.textContent = real ? nowHMS() : (sectorErr ? '演示·' + sectorErr : '演示数据');
 }
 
 // 点击情绪表盘 → 翻面看"为什么是这个档位"

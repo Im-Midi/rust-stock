@@ -192,16 +192,20 @@ async function loadDetail(code) {
       ['中单', ff.mid, ff.mid_pct],
       ['小单', ff.small, ff.small_pct],
     ];
-    const max = Math.max(1, ...rows.map(r => Math.abs(r[1])));
-    html += '<div class="sd-flow-title">资金流向（今日 · 红净流入 / 绿净流出）</div><div class="sd-flow">' + rows.map(r => {
-      const inflow = r[1] >= 0;
-      const w = Math.min(50, Math.abs(r[1]) / max * 50);
+    const vals = rows.map(r => Number(r[1]) || 0);
+    const max = Math.max(1, ...vals.map(Math.abs));
+    html += '<div class="sd-flow-title">资金流向（今日 · 红净流入 / 绿净流出）</div><div class="sd-flow">' + rows.map((r, k) => {
+      const val = vals[k];
+      const inflow = val >= 0;
+      // 非零值给最小 6% 宽度，保证肉眼可见
+      const w = val === 0 ? 0 : Math.max(6, Math.min(50, Math.abs(val) / max * 50));
       const color = inflow ? 'var(--up)' : 'var(--down)';
-      const bar = `<i style="${inflow ? 'left:50%' : 'right:50%'};width:${w}%;background:${color}"></i>`;
-      const pct = (r[2] != null && r[2] !== 0) ? ` (${r[2] >= 0 ? '+' : ''}${r[2].toFixed(2)}%)` : '';
+      const bar = `<i style="${inflow ? 'left:50%' : 'right:50%'};width:${w}%;background:${color};height:100%"></i>`;
+      const p2 = Number(r[2]);
+      const pct = (Number.isFinite(p2) && p2 !== 0) ? ` (${p2 >= 0 ? '+' : ''}${p2.toFixed(2)}%)` : '';
       return `<div class="sd-flow-row"><span class="fk">${r[0]}</span>
         <span class="fbar">${bar}</span>
-        <span class="fv" style="color:${color}">${fmtAmt(r[1])}${pct}</span></div>`;
+        <span class="fv" style="color:${color}">${fmtAmt(val)}${pct}</span></div>`;
     }).join('') + '</div>';
   }
   el.innerHTML = html;
@@ -305,10 +309,4 @@ export function initKline() {
   cv.addEventListener('touchend', (e) => {
     if (e.touches.length === 0) { tpan = null; pinch = null; }
     else if (e.touches.length === 1) {       // 双指退到单指：重置平移基准
-      pinch = null;
-      tpan = { x: e.touches[0].clientX, y: e.touches[0].clientY, start: view.start, axis: 'x' };
-    }
-  });
-
-  if (!inTauri) console.log('[preview] K线走 mock 随机游走');
-}
+  

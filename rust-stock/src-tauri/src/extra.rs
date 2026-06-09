@@ -52,22 +52,53 @@ pub fn parse_sectors(body: &str) -> Vec<Sector> {
         .collect()
 }
 
+// 取错误链最内层（真实根因）。reqwest 外层常是 "error sending request for url"，
+// 真正原因（dns/tls/连接重置/超时）在 source 链更深处。
+fn root_cause(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        msg = s.to_string();
+        src = s.source();
+    }
+    msg
+}
+
 #[cfg(feature = "net")]
 pub async fn fetch_sectors() -> Result<Vec<Sector>, String> {
     // m:90 t:2 = 行业板块；按涨跌幅 f3 降序
     let url = "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=60&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f3,f12,f14&ut=bd1d9ddb04089700cf9c27f6f7426281";
-    let resp = reqwest::Client::new()
-        .get(url)
-        .header("Referer", "https://quote.eastmoney.com/")
-        .send()
-        .await
-        .map_err(|e| format!("板块请求失败: {e}"))?;
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-    let list = parse_sectors(&text);
-    if list.is_empty() {
-        return Err("板块解析为空（接口字段可能变了）".into());
+    // 配 UA + 超时；启动时多请求并发，连接易抖动 → 重试 3 次
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|e| format!("板块客户端构建失败: {e}"))?;
+    let mut last = String::from("未知错误");
+    for attempt in 0..3 {
+        match client
+            .get(url)
+            .header("Referer", "https://quote.eastmoney.com/")
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.text().await {
+                Ok(text) => {
+                    let list = parse_sectors(&text);
+                    if !list.is_empty() {
+                        return Ok(list);
+                    }
+                    last = "板块解析为空（接口字段可能变了）".into();
+                }
+                Err(e) => last = format!("读取响应失败: {}", root_cause(&e)),
+            },
+            Err(e) => last = format!("板块请求失败: {}", root_cause(&e)),
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
     }
-    Ok(list)
+    Err(last)
 }
 
 // ============================================================
@@ -300,38 +331,4 @@ pub async fn fetch_candidates() -> Result<Vec<Candidate>, String> {
         c.on_lhb = lhb.contains(code6);
         map.entry(c.code.clone()).or_insert(c);
     }
-    let out: Vec<Candidate> = map.into_values().collect();
-    if out.is_empty() {
-        return Err("候选池为空（榜单接口可能变了或非交易时段）".into());
-    }
-    Ok(out)
-}
-
-#[cfg(test)]
-mod cand_tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_clist_stocks() {
-        let raw = r#"{"data":{"diff":[
-            {"f2":16.85,"f3":5.2,"f8":3.1,"f12":"600519","f13":1,"f14":"贵州茅台","f62":12345678.0},
-            {"f2":9.4,"f3":-1.2,"f8":8.0,"f12":"000001","f13":0,"f14":"平安银行","f62":-5000000.0},
-            {"f2":3.2,"f3":1.0,"f8":2.0,"f12":"000007","f13":0,"f14":"ST全新","f62":100.0}
-        ]}}"#;
-        let c = parse_clist_stocks(raw);
-        assert_eq!(c.len(), 2); // ST 过滤
-        assert_eq!(c[0].code, "sh600519");
-        assert!((c[0].change_pct - 5.2).abs() < 0.01);
-        assert_eq!(c[1].code, "sz000001");
-        assert!(c[1].change_pct < 0.0); // 下跌股保留（不淘汰）
-    }
-
-    #[test]
-    fn test_parse_lhb_codes() {
-        let raw = r#"{"result":{"data":[{"SECURITY_CODE":"600519"},{"SECURITY_CODE":"300750"}]}}"#;
-        let s = parse_lhb_codes(raw);
-        assert!(s.contains("600519"));
-        assert_eq!(s.len(), 2);
-        assert!(parse_lhb_codes("x").is_empty());
-    }
-}
+    let out: Vec<Candidate> = map.into_v
