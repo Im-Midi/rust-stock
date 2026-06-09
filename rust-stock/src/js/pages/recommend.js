@@ -243,4 +243,53 @@ async function togglePerf() {
   if (perfCache) { renderPerf(perfCache); return; }
   if (!inTauri) {
     renderPerf({ rows: [
-      { day: '2026-06-04', name: '贵州茅台', score: 72, ret: 4.1
+      { day: '2026-06-04', name: '贵州茅台', score: 72, ret: 4.12 },
+      { day: '2026-06-04', name: '宁德时代', score: 55, ret: -1.30 },
+      { day: '2026-06-03', name: '中际旭创', score: 64, ret: 7.85 },
+    ], winRate: 66.7, wins: 2, avg: 3.56 });
+    return;
+  }
+  perfBusy = true;
+  el.innerHTML = '<div class="rec-empty">⏳ 正在用K线回算历史推荐表现…</div>';
+  try {
+    perfCache = await computePerf();
+    renderPerf(perfCache);
+  } catch (e) {
+    el.innerHTML = '<div class="rec-empty">回算失败：' + e + '</div>';
+  } finally {
+    perfBusy = false;
+  }
+}
+
+export function initRecommend() {
+  document.getElementById('recPerf').addEventListener('click', togglePerf);
+  document.getElementById('recList').addEventListener('click', (e) => {
+    // 一键加自选（在行点击之前拦截）
+    const addBtn = e.target.closest('.rec-add');
+    if (addBtn) { addToWatch(+addBtn.dataset.add); return; }
+    const spark = e.target.closest('.rec-spark');
+    if (spark) {
+      const recsK = inTauri ? state.recHistory[today()] : mockRecs;
+      const rk = recsK && recsK[+spark.dataset.spark];
+      if (rk) showKline(rk.code, rk.name);
+      return;
+    }
+    const row = e.target.closest('.rec-row');
+    if (!row) return;
+    const tk = today();
+    const recs = inTauri ? state.recHistory[tk] : mockRecs;
+    const r = recs && recs[+row.dataset.i];
+    if (!r) return;
+    const streak = inTauri ? streakOf(r.code) : 0;
+    showAnalysis({
+      title: `${r.name} · AI 推荐`,
+      score: r.score,
+      text: r.reason,
+      meta: `${r.code.toUpperCase()} · 今日推荐${streak >= 7 ? ` · ★ 已连续 ${streak} 日` : ''} · 仅供参考，不构成投资建议`,
+      back: 'market',
+    });
+  });
+  document.getElementById('recRefresh').addEventListener('click', () => generate(true, true));
+  // 启动后自动生成（当天没有才生成）
+  generate(false);
+}

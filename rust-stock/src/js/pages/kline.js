@@ -315,4 +315,20 @@ export function initKline() {
         tpan.axis = dx > dy ? 'x' : 'y';
       }
       if (tpan.axis === 'y') return;          // 竖扫：交给页面滚动
-      e.pre
+      e.preventDefault();                     // 横扫：平移K线
+      const dIdx = Math.round((tpan.x - tx) / rect.width * view.count);
+      const ns = Math.max(0, Math.min(data.length - view.count, tpan.start + dIdx));
+      if (ns !== view.start) { view.start = ns; draw(); }
+    }
+  }, { passive: false });
+
+  cv.addEventListener('touchend', (e) => {
+    if (e.touches.length === 0) { tpan = null; pinch = null; }
+    else if (e.touches.length === 1) {       // 双指退到单指：重置平移基准
+      pinch = null;
+      tpan = { x: e.touches[0].clientX, y: e.touches[0].clientY, start: view.start, axis: 'x' };
+    }
+  });
+
+  if (!inTauri) console.log('[preview] K线走 mock 随机游走');
+}
