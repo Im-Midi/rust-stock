@@ -72,6 +72,7 @@ fn em_client() -> reqwest::Client {
         .user_agent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
         .timeout(std::time::Duration::from_secs(12))
         .no_gzip()
+        .pool_max_idle_per_host(0)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
