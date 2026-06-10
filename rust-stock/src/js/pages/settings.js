@@ -34,6 +34,7 @@ function applyThemeNow() {
   const h = new Date().getHours();
   const day = m === 'day' ? true : (m === 'night' ? false : (h >= 6 && h < 18));
   document.body.classList.toggle('day', day);
+  document.body.classList.toggle('glass', !!state.settings.glass);
 }
 
 export async function initSettings(onSaved) {
@@ -60,6 +61,18 @@ export async function initSettings(onSaved) {
     saveSettings({ ...state.settings, theme: b.dataset.theme });
     applyThemeNow();
     renderTheme();
+  });
+
+  // ---- 液态玻璃外观开关 ----
+  const renderGlass = () => document.querySelectorAll('#glassSeg button')
+    .forEach(b => b.classList.toggle('on', b.dataset.glass === (state.settings.glass ? 'on' : 'off')));
+  renderGlass();
+  document.getElementById('glassSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-glass]');
+    if (!b) return;
+    saveSettings({ ...state.settings, glass: b.dataset.glass === 'on' });
+    applyThemeNow();
+    renderGlass();
   });
 
   // ---- API Key 折叠 / 一键清除 ----

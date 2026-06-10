@@ -88,6 +88,7 @@ export function applyTheme() {
   const h = new Date().getHours();
   const day = m === 'day' ? true : (m === 'night' ? false : (h >= 6 && h < 18));
   document.body.classList.toggle('day', day);
+  document.body.classList.toggle('glass', !!(state.settings && state.settings.glass));
 }
 
 // ---------- 启动 ----------

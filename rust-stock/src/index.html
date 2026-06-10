@@ -553,6 +553,56 @@
   .seg { display: flex; gap: 6px; }
   .seg button { flex: 1; height: 32px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--txt-2); font-size: 12px; font-family: 'Sora',sans-serif; cursor: pointer; }
   .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ===== 液态玻璃外观（设置勾选启用，body.glass）===== */
+  body.glass {
+    --glass: rgba(255,255,255,.10);
+    --glass-border: rgba(255,255,255,.22);
+    --blur: 26px;
+    --bg-grad:
+      radial-gradient(360px 360px at 16% 6%, rgba(70,90,255,.42) 0%, transparent 60%),
+      radial-gradient(380px 380px at 96% 20%, rgba(180,80,255,.34) 0%, transparent 60%),
+      radial-gradient(360px 360px at 62% 98%, rgba(0,200,255,.30) 0%, transparent 62%),
+      radial-gradient(320px 320px at 4% 84%, rgba(255,95,140,.26) 0%, transparent 60%),
+      #0a0c14;
+  }
+  body.glass.day {
+    --glass: rgba(255,255,255,.50);
+    --glass-border: rgba(255,255,255,.78);
+    --bg-grad:
+      radial-gradient(360px 360px at 16% 6%, rgba(255,205,125,.60) 0%, transparent 62%),
+      radial-gradient(380px 380px at 96% 20%, rgba(255,175,195,.52) 0%, transparent 60%),
+      radial-gradient(360px 360px at 62% 98%, rgba(150,212,255,.52) 0%, transparent 62%),
+      radial-gradient(320px 320px at 4% 84%, rgba(220,200,150,.50) 0%, transparent 60%),
+      #efe7d6;
+  }
+  /* 卡片 / 指数条：更透 + 高光描边 + 浮起 */
+  body.glass .card,
+  body.glass .ticker {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(1.7);
+    backdrop-filter: blur(var(--blur)) saturate(1.7);
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 10px 30px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.30);
+  }
+  body.glass.day .card,
+  body.glass.day .ticker {
+    box-shadow: 0 10px 26px rgba(140,105,45,.16), inset 0 1px 0 rgba(255,255,255,.92);
+  }
+  /* 浮动玻璃药丸 Tab 栏 */
+  body.glass .nav {
+    margin: 4px 8px 8px;
+    border-radius: 22px;
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 8px 24px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.28);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(1.6);
+    backdrop-filter: blur(var(--blur)) saturate(1.6);
+  }
+  /* 不支持 backdrop-filter 的老机型：退化为更不透明纯色，保证可读 */
+  @supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+    body.glass { --glass: rgba(20,22,30,.92); }
+    body.glass.day { --glass: rgba(255,253,248,.95); }
+  }
   .key-input-wrap { position: relative; }
   .key-input-wrap .w-input { padding-right: 32px; }
   .key-x { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 22px; height: 22px; border: none; background: transparent; color: var(--txt-3); cursor: pointer; font-size: 13px; }
@@ -825,6 +875,14 @@
               <button type="button" data-theme="day">浅色</button>
               <button type="button" data-theme="night">深色</button>
             </div>
+          </div>
+          <div class="set-group">
+            <label>液态玻璃外观（实验）</label>
+            <div class="seg" id="glassSeg">
+              <button type="button" data-glass="off">关闭</button>
+              <button type="button" data-glass="on">开启</button>
+            </div>
+            <div class="set-note">磨砂玻璃质感：半透明 + 模糊 + 高光描边 + 浮动药丸 Tab。仿 iOS「液态玻璃」的 WebView 近似实现，夜/日皆适配；极老旧安卓机型会自动降级为不透明底色。</div>
           </div>
           <div class="set-group">
             <label>AI API Key（默认 DeepSeek）</label>
