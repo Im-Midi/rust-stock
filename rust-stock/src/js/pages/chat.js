@@ -108,13 +108,33 @@ function renderFav() {
     const items = state.research.saved.filter(s => s.groupId === g.id);
     const ih = items.length ? items.map(it => `
       <div class="fav-item" data-id="${it.id}">
-        <div class="fi-head"><span>${it.time} · ${esc(it.topic || '调研')}</span><i class="fi-del" data-del="${it.id}">删除</i></div>
+        <div class="fi-head"><span>${it.time} · ${esc(it.topic || '调研')}</span><span class="fi-acts"><i class="fi-copy" data-copy="${it.id}">复制</i><i class="fi-del" data-del="${it.id}">删除</i></span></div>
         <div class="fi-text" data-exp="${it.id}">${esc(it.text)}</div>
       </div>`).join('') : '<div class="fav-empty">（空，做完深度调研点「加入分组」存这里）</div>';
-    return `<div class="fav-group"><h4><span data-gname="${g.id}">${esc(g.name)}</span><button class="ren" data-ren="${g.id}">改名</button></h4>${ih}</div>`;
+    const gcopy = items.length ? `<button class="ren" data-gcopy="${g.id}">复制全部</button>` : '';
+    return `<div class="fav-group"><h4><span data-gname="${g.id}">${esc(g.name)}</span>${gcopy}<button class="ren" data-ren="${g.id}">改名</button></h4>${ih}</div>`;
   }).join('') + '<div class="fav-empty" style="margin-top:6px">同步到云端（多设备）为付费功能，敬请期待。</div>';
 }
 export function openFav() { renderFav(); document.getElementById('favModal').classList.add('open'); }
+
+// 一键复制：优先 navigator.clipboard，回退 textarea+execCommand（textarea 需放开 user-select）
+async function copyText(txt, okMsg) {
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = txt;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;-webkit-user-select:text;user-select:text';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+    ta.remove(); return ok;
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(txt);
+      flashHint(okMsg || '已复制'); return;
+    }
+  } catch (e) { /* 落到回退 */ }
+  flashHint(fallback() ? (okMsg || '已复制') : '复制失败');
+}
 
 function startRename(gid) {
   const g = state.research.groups.find(x => x.id === gid);
@@ -152,6 +172,17 @@ export function initChat() {
   document.getElementById('favClose').addEventListener('click', () => document.getElementById('favModal').classList.remove('open'));
   document.getElementById('favModal').addEventListener('click', (e) => { if (e.target.id === 'favModal') e.currentTarget.classList.remove('open'); });
   document.getElementById('favBody').addEventListener('click', (e) => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { const it = state.research.saved.find(s => s.id === cp.dataset.copy); if (it) copyText(it.text, '已复制本条'); return; }
+    const gcp = e.target.closest('[data-gcopy]');
+    if (gcp) {
+      const items = state.research.saved.filter(s => s.groupId === gcp.dataset.gcopy);
+      if (!items.length) return;
+      const g = state.research.groups.find(x => x.id === gcp.dataset.gcopy);
+      const txt = items.map(it => `【${it.time} · ${it.topic || '调研'}】\n${it.text}`).join('\n\n──────────\n\n');
+      copyText(txt, `已复制「${g ? g.name : ''}」全部 ${items.length} 条`);
+      return;
+    }
     const del = e.target.closest('[data-del]');
     if (del) { state.research.saved = state.research.saved.filter(s => s.id !== del.dataset.del); saveResearch(); renderFav(); return; }
     const ren = e.target.closest('[data-ren]');
