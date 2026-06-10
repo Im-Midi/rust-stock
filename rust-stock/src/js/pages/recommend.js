@@ -17,15 +17,16 @@ const mockRecs = [
 let pending = false;
 let recPrices = {}; // code -> {price,change_pct} 实时行情(独立于候选池)
 
-// 近6日收盘价折线是否下行（线性回归斜率<0 视为下行 → 剔除）
+// 连续6个交易日逐日下行（每天收盘都比前一天低）才算「下行」→ 剔除。
+// 需 7 个收盘价（=6 个日间变动）；不足则不判定（不剔除）。
 function is6dDown(candles) {
-  const closes = (candles || []).map(c => c.close).filter(x => typeof x === 'number').slice(-6);
-  if (closes.length < 2) return false;
-  const n = closes.length; let sx = 0, sy = 0, sxy = 0, sxx = 0;
-  closes.forEach((y, x) => { sx += x; sy += y; sxy += x * y; sxx += x * x; });
-  const denom = n * sxx - sx * sx;
-  if (!denom) return false;
-  return (n * sxy - sx * sy) / denom < 0;
+  const closes = (candles || []).map(c => c.close).filter(x => typeof x === 'number');
+  if (closes.length < 7) return false;
+  const w = closes.slice(-7);
+  for (let i = 1; i < w.length; i++) {
+    if (!(w[i] < w[i - 1])) return false; // 有一天没跌 → 不算连续6日下行
+  }
+  return true;
 }
 
 // 连续推荐天数：从最近的推荐日往前数，必须每个推荐日都包含该股
@@ -123,7 +124,7 @@ export function renderRecommend(skipFill) {
   // 近6日收盘价折线下行 → 剔除（需已缓存日K才能判断；未缓存先全展示，拉到K线后复筛）
   const hidden = new Set(recs.filter(r => sparkCache[r.code] && is6dDown(sparkCache[r.code])).map(r => r.code));
   if (recs.length && hidden.size === recs.length) {
-    list.innerHTML = '<div class="rec-empty">今日候选近6日收盘价折线均下行，已按规则全部剔除</div>';
+    list.innerHTML = '<div class="rec-empty">今日候选均连续6日逐日下行，已按规则全部剔除</div>';
     note.textContent = '';
     return;
   }
@@ -153,7 +154,7 @@ export function renderRecommend(skipFill) {
       <button class="rec-add${inWl ? ' added' : ''}" data-add="${i}" title="${inWl ? '已在自选' : '一键加入自选'}">${inWl ? '✓' : '＋'}</button>
     </div>`;
   }).join('');
-  note.innerHTML = '右侧缩略图＝<span class="spark-label">近30日收盘价折线</span>（真实日K收盘价连线，点击看完整日K）。本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。近6日收盘价折线下行者已自动剔除。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
+  note.innerHTML = '右侧缩略图＝<span class="spark-label">近30日收盘价折线</span>（真实日K收盘价连线，点击看完整日K）。本地筛全市场候选池(涨幅/主力净流入/龙虎榜) → AI 用供应链瓶颈+多流派(价值/成长/游资/技术/宏观)+龙虎榜深度分析。连续6日收盘价逐日下行者已自动剔除。★=连续≥7推荐日同股。仅供参考，不构成投资建议。';
   drawSparks(recs);
   if (!skipFill && inTauri) { fillRecPrices(recs); ensureSparkData(recs); }
 }
