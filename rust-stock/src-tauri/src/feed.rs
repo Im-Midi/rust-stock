@@ -74,6 +74,58 @@ pub fn parse_em_news(body: &str) -> Vec<NewsItem> {
         .collect()
 }
 
+/// 解析财联社电报 /api/cache?name=telegraph：data.roll_data[]
+/// 字段：title（空则用 brief/content）、ctime(Unix秒)、subjects[].subject_name、
+///       stock_list[].StockID(如 sz001203)、shareurl / 拼 https://www.cls.cn/detail/{id}
+pub fn parse_cls_news(body: &str) -> Vec<NewsItem> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    if v["errno"].as_i64().unwrap_or(-1) != 0 {
+        return vec![];
+    }
+    let list = match v["data"]["roll_data"].as_array() {
+        Some(l) => l,
+        None => return vec![],
+    };
+    list.iter()
+        .filter_map(|it| {
+            let txt = it["title"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| it["brief"].as_str())
+                .or_else(|| it["content"].as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if txt.is_empty() {
+                return None;
+            }
+            // ctime(Unix秒) → 北京时间 HH:MM（不引 chrono）
+            let ct = it["ctime"].as_i64().unwrap_or(0);
+            let time = if ct > 0 {
+                let sod = ((ct + 8 * 3600) % 86400 + 86400) % 86400;
+                format!("{:02}:{:02}", sod / 3600, (sod % 3600) / 60)
+            } else {
+                String::new()
+            };
+            let tag = it["subjects"][0]["subject_name"].as_str().unwrap_or("").to_string();
+            let stocks = it["stock_list"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|s| s["StockID"].as_str().map(|x| x.to_string())).collect())
+                .unwrap_or_default();
+            let id = it["id"].as_i64().unwrap_or(0);
+            let url = it["shareurl"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| if id > 0 { format!("https://www.cls.cn/detail/{id}") } else { String::new() });
+            Some(NewsItem { time, txt, tag, stocks, url })
+        })
+        .collect()
+}
+
 /// 解析东财个股资讯（np-listapi getListInfo，2026-06-06 实测）
 /// {"code":1,"data":{"list":[{"Art_ShowTime":"2026-06-05 21:19:00","Art_Title":"…","Art_Url":"http://…"}]}}
 pub fn parse_stock_news(body: &str, stock_name: &str, secid: &str) -> Vec<NewsItem> {
@@ -114,8 +166,32 @@ pub fn filter_for_stocks(items: Vec<NewsItem>, secids: &[String], names: &[Strin
         .collect()
 }
 
+/// 财联社电报（匿名可取，UTF-8 JSON）。失败返回空，由 fetch_news 回退东财。
+#[cfg(feature = "net")]
+async fn fetch_cls_news() -> Vec<NewsItem> {
+    let url = "https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9";
+    match reqwest::Client::new()
+        .get(url)
+        .header("Referer", "https://www.cls.cn/")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.text().await {
+            Ok(t) => parse_cls_news(&t),
+            Err(_) => vec![],
+        },
+        Err(_) => vec![],
+    }
+}
+
 #[cfg(feature = "net")]
 pub async fn fetch_news() -> Result<Vec<NewsItem>, String> {
+    // 财联社电报为主源（资讯更快更全），失败回退东财 7×24
+    let cls = fetch_cls_news().await;
+    if !cls.is_empty() {
+        return Ok(cls);
+    }
     fetch_news_n(20).await
 }
 
@@ -264,6 +340,28 @@ pub async fn fetch_sentiment() -> Result<Sentiment, String> {
 // ============================================================
 // 单元测试（不依赖网络）
 // ============================================================
+#[cfg(test)]
+mod cls_tests {
+    use super::*;
+    #[test]
+    fn test_parse_cls_news() {
+        let raw = r#"{"errno":0,"data":{"roll_data":[
+            {"id":123,"title":"某公司中标大单","brief":"b","ctime":1781173342,"subjects":[{"subject_name":"A股公告速递"}],"stock_list":[{"StockID":"sz001203"}],"shareurl":"https://www.cls.cn/detail/123"},
+            {"id":124,"title":"","brief":"腾讯回购","ctime":1781172293,"subjects":[],"stock_list":[]}
+        ]}}"#;
+        let n = parse_cls_news(raw);
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].txt, "某公司中标大单");
+        assert_eq!(n[0].tag, "A股公告速递");
+        assert_eq!(n[0].stocks, vec!["sz001203"]);
+        assert_eq!(n[0].url, "https://www.cls.cn/detail/123");
+        assert_eq!(n[1].txt, "腾讯回购"); // title 空回退 brief
+        assert_eq!(n[1].url, "https://www.cls.cn/detail/124");
+        assert!(parse_cls_news("x").is_empty());
+        assert!(parse_cls_news(r#"{"errno":1}"#).is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

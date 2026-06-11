@@ -20,3 +20,6 @@ Copyright (c) Im-Midi
 4. mpquant/MyTT (MIT License) — 通达信口径技术指标
    MACD/KDJ/RSI/BOLL 等指标按其公式移植，见 rust-stock/src/js/mytt.js。
    MIT 许可证保留原作者版权声明。
+
+数据源说明：行情/资讯使用财联社(cls.cn)、东方财富(eastmoney.com)、新浪财经等公开接口
+（仅使用接口地址与返回结构，非官方授权，随时可能变更；各源独立容错，失败不影响主功能）。
