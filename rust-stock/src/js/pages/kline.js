@@ -2,6 +2,7 @@
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
 import { fetchKline, fetchQuotes, fetchFundFlow } from '../api.js';
 import { calcChips } from '../chip.js';
+import { indicatorSummary } from '../mytt.js';
 import { switchPage } from '../router.js';
 import { inTauri, isMobile } from '../bridge.js';
 
@@ -156,6 +157,22 @@ async function load() {
   document.getElementById('klineMeta').textContent =
     `${cur.code.toUpperCase()} · 共 ${data.length} 根 · 前复权 · ${gesture}` + (mocked ? ' · 预览模拟数据' : ' · 东方财富');
   drawChip();
+  drawIndicators();
+}
+
+// MyTT 通达信口径指标现值（仅日K口径）
+function drawIndicators() {
+  const el = document.getElementById('klineIndi');
+  if (!el) return;
+  const s = (cur.period === 'day') ? indicatorSummary(data) : null;
+  if (!s) { el.innerHTML = ''; return; }
+  const cx = c => c === 'gold' ? '<span class="gold">金叉</span>' : c === 'dead' ? '<span class="dead">死叉</span>' : '';
+  const f = (v, n = 2) => Number.isFinite(v) ? v.toFixed(n) : '--';
+  el.innerHTML =
+    `<span>MACD ${cx(s.macd.cross)} DIF <b>${f(s.macd.dif)}</b> DEA <b>${f(s.macd.dea)}</b> M <b>${f(s.macd.macd)}</b></span>` +
+    `<span>KDJ ${cx(s.kdj.cross)} K <b>${f(s.kdj.k, 1)}</b> D <b>${f(s.kdj.d, 1)}</b> J <b>${f(s.kdj.j, 1)}</b></span>` +
+    `<span>RSI6 <b>${f(s.rsi.r6, 1)}</b> RSI12 <b>${f(s.rsi.r12, 1)}</b></span>` +
+    `<span>BOLL 上<b>${f(s.boll.up)}</b> 中<b>${f(s.boll.mid)}</b> 下<b>${f(s.boll.low)}</b></span>`;
 }
 
 // 筹码分布：用全量日K（含换手率/成交额）算分布并绘制

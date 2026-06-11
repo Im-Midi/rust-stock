@@ -16,3 +16,7 @@ Copyright (c) Im-Midi
 3. vsme/chinese-days — A股交易日历（节假日/调休数据）
    交易日判断使用其公开节假日数据（jsDelivr 直链，内置 2025–2026 兜底），
    见 rust-stock/src/js/tradingcal.js。引入前请确认其仓库 LICENSE。
+
+4. mpquant/MyTT (MIT License) — 通达信口径技术指标
+   MACD/KDJ/RSI/BOLL 等指标按其公式移植，见 rust-stock/src/js/mytt.js。
+   MIT 许可证保留原作者版权声明。

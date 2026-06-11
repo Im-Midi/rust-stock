@@ -653,6 +653,11 @@
   .chip-panel .chip-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--txt); margin-bottom: 6px; }
   .chip-panel .chip-stat { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--txt-2); }
   #chipCanvas { width: 100%; border-radius: 9px; background: var(--surface-2); display: block; }
+  /* MyTT 指标读出（通达信口径） */
+  .kline-indi { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--txt-2); margin-top: 8px; line-height: 1.5; }
+  .kline-indi b { color: var(--txt); font-weight: 600; }
+  .kline-indi .gold { color: var(--up); font-weight: 600; }
+  .kline-indi .dead { color: var(--down); font-weight: 600; }
   .kline-info {
     display: flex; gap: 10px; flex-wrap: wrap;
     font-size: 10px; color: var(--txt-2);
@@ -957,6 +962,7 @@
           </div>
           <canvas id="klineCanvas" width="672" height="460"></canvas>
           <div class="kline-info" id="klineInfo"></div>
+          <div class="kline-indi" id="klineIndi"></div>
           <div id="stockDetail"></div>
           <div class="chip-panel" id="chipPanel" style="display:none">
             <div class="chip-head">筹码分布<span class="chip-stat" id="chipStat"></span></div>
