@@ -52,6 +52,69 @@ pub fn parse_kline(body: &str) -> Vec<Candle> {
         .collect()
 }
 
+/// 解析腾讯前复权日K：data.{code}.qfqday = [[日期,开,收,高,低,量,(可选分红)],...]
+pub fn parse_tencent_kline(body: &str, code: &str) -> Vec<Candle> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let node = &v["data"][code];
+    let arr = match ["qfqday", "day", "qfqweek", "week", "qfqmonth", "month"]
+        .iter()
+        .find_map(|k| node[*k].as_array())
+    {
+        Some(a) => a,
+        None => return vec![],
+    };
+    arr.iter()
+        .filter_map(|row| {
+            let r = row.as_array()?;
+            if r.len() < 6 {
+                return None;
+            }
+            let num = |i: usize| r.get(i).and_then(|x| x.as_str()).and_then(|s| s.parse::<f64>().ok());
+            Some(Candle {
+                date: r.get(0)?.as_str()?.to_string(),
+                open: num(1)?,
+                close: num(2)?,
+                high: num(3)?,
+                low: num(4)?,
+                volume: num(5).unwrap_or(0.0),
+                amount: 0.0,   // 腾讯不带成交额
+                turnover: 0.0, // 腾讯日K不带换手率（筹码退化为成交量分布，价格仍真实）
+            })
+        })
+        .collect()
+}
+
+/// 解析新浪日K：[{"day":"... HH:MM:SS","open":"..","high":"..","low":"..","close":"..","volume":".."}]
+pub fn parse_sina_kline(body: &str) -> Vec<Candle> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+    arr.iter()
+        .filter_map(|it| {
+            let num = |k: &str| it[k].as_str().and_then(|s| s.parse::<f64>().ok());
+            let day = it["day"].as_str()?;
+            Some(Candle {
+                date: day.split(' ').next().unwrap_or(day).to_string(),
+                open: num("open")?,
+                close: num("close")?,
+                high: num("high")?,
+                low: num("low")?,
+                volume: num("volume").unwrap_or(0.0),
+                amount: 0.0,
+                turnover: 0.0,
+            })
+        })
+        .collect()
+}
+
 #[cfg(feature = "net")]
 pub async fn fetch_kline(code: &str, klt: u32, lmt: u32) -> Result<Vec<Candle>, String> {
     let secid = crate::sources::to_secid(code).ok_or_else(|| format!("无法识别的代码: {code}"))?;
@@ -60,15 +123,56 @@ pub async fn fetch_kline(code: &str, klt: u32, lmt: u32) -> Result<Vec<Candle>, 
          &fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f61\
          &klt={klt}&fqt=1&end=20500101&lmt={lmt}"
     );
-    // 复用 extra 的免 gzip + 3 次重试客户端：化解安卓 rustls 对东财的偶发 close_notify
-    let text = crate::extra::em_get_text(&url, "https://quote.eastmoney.com/")
-        .await
-        .map_err(|e| format!("K线请求失败: {e}"))?;
-    let candles = parse_kline(&text);
-    if candles.is_empty() {
-        return Err("K线解析为空（代码不存在或接口字段变了）".into());
+    // 1) 东方财富（最全：带成交额/换手率，筹码精度最高）。免 gzip + 3 次重试化解安卓 rustls close_notify
+    if let Ok(text) = crate::extra::em_get_text(&url, "https://quote.eastmoney.com/").await {
+        let c = parse_kline(&text);
+        if !c.is_empty() {
+            return Ok(c);
+        }
     }
-    Ok(candles)
+    // 2) 腾讯（前复权日/周/月，价格真实；无换手率/成交额）
+    let t = fetch_kline_tencent(code, klt, lmt).await;
+    if !t.is_empty() {
+        return Ok(t);
+    }
+    // 3) 新浪（日K兜底）
+    let s = fetch_kline_sina(code, klt, lmt).await;
+    if !s.is_empty() {
+        return Ok(s);
+    }
+    Err("K线获取失败（东财/腾讯/新浪三源均未取到，请稍后重试）".into())
+}
+
+#[cfg(feature = "net")]
+async fn fetch_kline_tencent(code: &str, klt: u32, lmt: u32) -> Vec<Candle> {
+    let period = match klt {
+        102 => "week",
+        103 => "month",
+        _ => "day",
+    };
+    let lc = code.to_lowercase();
+    let url = format!("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={lc},{period},,,{lmt},qfq");
+    match crate::extra::em_get_text(&url, "https://gu.qq.com/").await {
+        Ok(text) => parse_tencent_kline(&text, &lc),
+        Err(_) => vec![],
+    }
+}
+
+#[cfg(feature = "net")]
+async fn fetch_kline_sina(code: &str, klt: u32, lmt: u32) -> Vec<Candle> {
+    let scale = match klt {
+        102 => 1680,
+        103 => 7200,
+        _ => 240,
+    };
+    let lc = code.to_lowercase();
+    let url = format!(
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={lc}&scale={scale}&ma=no&datalen={lmt}"
+    );
+    match crate::extra::em_get_text(&url, "https://finance.sina.com.cn/").await {
+        Ok(text) => parse_sina_kline(&text),
+        Err(_) => vec![],
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +200,30 @@ mod tests {
     fn test_parse_kline_garbage() {
         assert_eq!(parse_kline("not json").len(), 0);
         assert_eq!(parse_kline(r#"{"data":null}"#).len(), 0);
+    }
+
+    #[test]
+    fn test_parse_tencent_kline() {
+        let raw = r#"{"code":0,"data":{"sh600782":{"qfqday":[
+            ["2026-06-10","2.610","2.590","2.620","2.560","395433.000"],
+            ["2026-06-11","2.570","2.590","2.610","2.550","266333.000",{"nd":"x"}]
+        ]}}}"#;
+        let c = parse_tencent_kline(raw, "sh600782");
+        assert_eq!(c.len(), 2);
+        assert!((c[1].close - 2.59).abs() < 1e-6);
+        assert!((c[1].open - 2.57).abs() < 1e-6);
+        assert!((c[1].high - 2.61).abs() < 1e-6);
+        assert!((c[1].low - 2.55).abs() < 1e-6);
+        assert!(parse_tencent_kline("x", "sh1").is_empty());
+    }
+
+    #[test]
+    fn test_parse_sina_kline() {
+        let raw = r#"[{"day":"2026-06-11 15:00:00","open":"2.570","high":"2.610","low":"2.550","close":"2.590","volume":"26633300"}]"#;
+        let c = parse_sina_kline(raw);
+        assert_eq!(c.len(), 1);
+        assert!((c[0].close - 2.59).abs() < 1e-6);
+        assert_eq!(c[0].date, "2026-06-11");
+        assert!(parse_sina_kline("{}").is_empty());
     }
 }
