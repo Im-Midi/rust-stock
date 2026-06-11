@@ -17,6 +17,8 @@ pub struct Candle {
     pub high: f64,
     pub low: f64,
     pub volume: f64,
+    pub amount: f64,   // 成交额（元）f57
+    pub turnover: f64, // 换手率（%）f61
 }
 
 pub fn parse_kline(body: &str) -> Vec<Candle> {
@@ -43,6 +45,8 @@ pub fn parse_kline(body: &str) -> Vec<Candle> {
                 high: f[3].parse().ok()?,
                 low: f[4].parse().ok()?,
                 volume: f[5].parse().unwrap_or(0.0),
+                amount: f.get(6).and_then(|x| x.parse().ok()).unwrap_or(0.0),
+                turnover: f.get(7).and_then(|x| x.parse().ok()).unwrap_or(0.0),
             })
         })
         .collect()
@@ -53,7 +57,7 @@ pub async fn fetch_kline(code: &str, klt: u32, lmt: u32) -> Result<Vec<Candle>, 
     let secid = crate::sources::to_secid(code).ok_or_else(|| format!("无法识别的代码: {code}"))?;
     let url = format!(
         "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}\
-         &fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56\
+         &fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f61\
          &klt={klt}&fqt=1&end=20500101&lmt={lmt}"
     );
     let resp = reqwest::Client::new()

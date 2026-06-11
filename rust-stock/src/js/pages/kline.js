@@ -1,6 +1,7 @@
 // pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
 import { fetchKline, fetchQuotes, fetchFundFlow } from '../api.js';
+import { calcChips } from '../chip.js';
 import { switchPage } from '../router.js';
 import { inTauri, isMobile } from '../bridge.js';
 
@@ -24,10 +25,13 @@ function mockCandles(code, n = FETCH_N) {
     const close = Math.max(1, open + drift);
     const high = Math.max(open, close) * (1 + rand() * 0.015);
     const low = Math.min(open, close) * (1 - rand() * 0.015);
+    const vol = 10000 + rand() * 90000;
     out.push({
       date: d.toISOString().slice(0, 10),
       open, close, high, low,
-      volume: 10000 + rand() * 90000,
+      volume: vol,
+      amount: vol * 100 * (high + low + close) / 3,
+      turnover: 1 + rand() * 4,
     });
     price = close;
   }
@@ -151,6 +155,49 @@ async function load() {
   const gesture = isMobile ? '双指缩放 / 单指平移' : '滚轮缩放 / 拖动平移';
   document.getElementById('klineMeta').textContent =
     `${cur.code.toUpperCase()} · 共 ${data.length} 根 · 前复权 · ${gesture}` + (mocked ? ' · 预览模拟数据' : ' · 东方财富');
+  drawChip();
+}
+
+// 筹码分布：用全量日K（含换手率/成交额）算分布并绘制
+function drawChip() {
+  const panel = document.getElementById('chipPanel');
+  const cv = document.getElementById('chipCanvas');
+  if (!panel || !cv) return;
+  const res = (cur.period === 'day') ? calcChips(data, 80) : null; // 仅日K口径有意义
+  if (!res || !res.sumVol) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  const padT = 10, padB = 10, padR = 64, padL = 8;
+  const plotH = H - padT - padB;
+  const lo = res.minPrice, hi = res.maxPrice, span = (hi - lo) || 1;
+  const y = p => padT + (hi - p) / span * plotH;
+  const maxR = Math.max(...res.items.map(it => it.ratio)) || 1;
+  const cs = getComputedStyle(document.body);
+  const UP = cs.getPropertyValue('--up').trim() || '#ff4d4f';
+  const barMaxW = W - padR - padL - 2;
+  const binH = plotH / res.items.length;
+  res.items.forEach(it => {
+    const w = it.ratio / maxR * barMaxW;
+    if (w <= 0) return;
+    const yy = y(it.price);
+    ctx.fillStyle = it.price <= res.current ? 'rgba(255,77,79,.55)' : 'rgba(20,200,125,.5)';
+    ctx.fillRect(W - padR - w, yy - binH / 2, w, Math.max(1, binH * 0.9));
+  });
+  const line = (p, color, dash, label) => {
+    if (!(p > 0)) return;
+    const yy = y(p);
+    ctx.save(); ctx.setLineDash(dash); ctx.strokeStyle = color; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = color; ctx.font = '15px "DM Mono", monospace'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, W - padR + 5, yy);
+  };
+  line(res.current, UP, [], res.current.toFixed(2));
+  line(res.avgCost, '#f5a623', [4, 3], res.avgCost.toFixed(2));
+  const pr = res.profitRatio * 100;
+  document.getElementById('chipStat').innerHTML =
+    `获利 <b class="${pr >= 50 ? 'up-c' : 'down-c'}">${pr.toFixed(1)}%</b> · 均价 <b>${res.avgCost.toFixed(2)}</b> · 现价 <b>${res.current.toFixed(2)}</b>`;
 }
 
 // 金额格式化：元 → 亿/万

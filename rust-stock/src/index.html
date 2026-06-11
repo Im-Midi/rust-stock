@@ -648,6 +648,11 @@
   }
   .kp-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
   #klineCanvas { width: 100%; border-radius: 9px; background: var(--surface-2); display: block; }
+  /* 筹码分布面板 */
+  .chip-panel { margin-top: 12px; }
+  .chip-panel .chip-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--txt); margin-bottom: 6px; }
+  .chip-panel .chip-stat { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--txt-2); }
+  #chipCanvas { width: 100%; border-radius: 9px; background: var(--surface-2); display: block; }
   .kline-info {
     display: flex; gap: 10px; flex-wrap: wrap;
     font-size: 10px; color: var(--txt-2);
@@ -941,6 +946,11 @@
           <canvas id="klineCanvas" width="672" height="460"></canvas>
           <div class="kline-info" id="klineInfo"></div>
           <div id="stockDetail"></div>
+          <div class="chip-panel" id="chipPanel" style="display:none">
+            <div class="chip-head">筹码分布<span class="chip-stat" id="chipStat"></span></div>
+            <canvas id="chipCanvas" width="672" height="220"></canvas>
+            <div class="set-note">基于近 N 日日K + 换手率衰减的近似筹码分布：横条＝该价位筹码量，<span class="up-c">红＝获利盘</span> / <span class="down-c">绿＝套牢盘</span>；实线＝现价，虚线＝平均成本。近似算法，仅供参考。</div>
+          </div>
           <div class="set-note" id="klineMeta"></div>
         </div>
       </div>

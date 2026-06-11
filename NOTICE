@@ -1,0 +1,10 @@
+rust-stock
+Copyright (c) Im-Midi
+
+本产品包含借鉴 / 移植自以下第三方开源项目的内容：
+
+1. ArvinLovegood/go-stock (Apache License 2.0)
+   https://github.com/ArvinLovegood/go-stock
+   - 筹码分布近似算法（换手率衰减 + 高斯核成本中枢分摊）移植自其
+     backend/data/chip_distribution.go，见 rust-stock/src/js/chip.js。
+   Apache-2.0 许可证全文见 http://www.apache.org/licenses/LICENSE-2.0
