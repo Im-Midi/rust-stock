@@ -152,7 +152,21 @@ async function load() {
   document.getElementById('klineMeta').textContent = '加载中…';
   let candles = await fetchKline(cur.code, cur.period, FETCH_N);
   let mocked = false;
-  if (!candles) { candles = mockCandles(cur.code); mocked = true; }
+  if (!candles) {
+    if (inTauri) {
+      // 真机：K线拉取失败，绝不用模拟数据冒充（否则会把如 2.59 显示成假的 200 多，并误导筹码/指标）
+      data = [];
+      const cv = document.getElementById('klineCanvas');
+      if (cv) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+      const info = document.getElementById('klineInfo'); if (info) info.innerHTML = '';
+      const panel = document.getElementById('chipPanel'); if (panel) panel.style.display = 'none';
+      const indi = document.getElementById('klineIndi'); if (indi) indi.innerHTML = '';
+      document.getElementById('klineMeta').textContent =
+        `${cur.code.toUpperCase()} · K线加载失败（网络波动）· 点周期键或重进重试（不会用模拟数据冒充真实价）`;
+      return;
+    }
+    candles = mockCandles(cur.code); mocked = true; // 仅浏览器预览用假数据
+  }
   data = candles;
   resetView();
   draw();
