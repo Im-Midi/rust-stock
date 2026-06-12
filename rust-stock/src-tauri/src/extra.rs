@@ -353,22 +353,65 @@ fn parse_clist_stocks(body: &str) -> Vec<Candidate> {
 
 #[cfg(feature = "net")]
 async fn clist_rank(fid: &str, pz: u32) -> Vec<Candidate> {
-    // 沪深主板+创业板+科创板 A 股
+    // 沪深主板+创业板+科创板 A 股（em_get_text：免 gzip + 3 次退避重试，
+    // 化解 rustls 偶发 close_notify 把候选池打薄的问题）
     let url = format!(
         "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz={pz}&po=1&np=1&fltt=2&invt=2\
          &fid={fid}&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:7,m:1+t:3\
          &fields=f2,f3,f8,f12,f13,f14,f62&ut=bd1d9ddb04089700cf9c27f6f7426281"
     );
-    match em_client()
-        .get(&url)
-        .header("Referer", "https://quote.eastmoney.com/")
-        .send()
-        .await
-    {
-        Ok(resp) => match resp.text().await {
-            Ok(t) => parse_clist_stocks(&t),
-            Err(_) => vec![],
-        },
+    match em_get_text(&url, "https://quote.eastmoney.com/").await {
+        Ok(t) => parse_clist_stocks(&t),
+        Err(_) => vec![],
+    }
+}
+
+/// 解析腾讯全市场榜 getBoardRankList：data.rank_list[]（2026-06-12 实测）
+/// 字段：code("sh600519") name zxj(现价) zdf(涨跌幅%) hsl(换手率%) zljlr(主力净流入,万元)
+/// 数值全是字符串，num() 已兼容。
+fn parse_qq_rank(body: &str) -> Vec<Candidate> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let list = match v["data"]["rank_list"].as_array() {
+        Some(l) => l,
+        None => return vec![],
+    };
+    list.iter()
+        .filter_map(|d| {
+            let code = d["code"].as_str()?.to_lowercase();
+            if !(code.starts_with("sh") || code.starts_with("sz")) || code.len() != 8 {
+                return None;
+            }
+            let name = d["name"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || name.contains("ST") {
+                return None; // 过滤 ST，与东财榜口径一致
+            }
+            Some(Candidate {
+                code,
+                name,
+                price: num(&d["zxj"]),
+                change_pct: num(&d["zdf"]),
+                turnover: num(&d["hsl"]),
+                main_flow: num(&d["zljlr"]) * 1e4, // 万元 → 元，与东财 f62 口径一致
+                on_lhb: false,
+            })
+        })
+        .collect()
+}
+
+// 腾讯全市场榜兜底池：该接口 sort_type 实测只认 price / turnover 等少数值
+//（zdf / zljlr 等都报"参数错误"），拿不到现成的涨幅榜/主力榜——所以取
+// 「成交额榜」前 N 支作活跃股池，回到 fetch_candidates 里本地再按
+// 涨幅 / 主力净流入各排一份，候选池口径与东财版保持一致。
+#[cfg(feature = "net")]
+async fn qq_rank_pool(count: u32) -> Vec<Candidate> {
+    let url = format!(
+        "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList?board_code=aStock&sort_type=turnover&direct=down&offset=0&count={count}"
+    );
+    match em_get_text(&url, "https://gu.qq.com/").await {
+        Ok(t) => parse_qq_rank(&t),
         Err(_) => vec![],
     }
 }
@@ -392,11 +435,8 @@ fn parse_lhb_codes(body: &str) -> std::collections::HashSet<String> {
 async fn fetch_lhb_codes() -> std::collections::HashSet<String> {
     // 东财龙虎榜当日列表（取最近交易日，按上榜净额）
     let url = "https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=TRADE_DATE&sortTypes=-1&pageSize=200&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=SECURITY_CODE&source=WEB&client=WEB";
-    match em_client().get(url).header("Referer", "https://data.eastmoney.com/").send().await {
-        Ok(resp) => match resp.text().await {
-            Ok(t) => parse_lhb_codes(&t),
-            Err(_) => Default::default(),
-        },
+    match em_get_text(url, "https://data.eastmoney.com/").await {
+        Ok(t) => parse_lhb_codes(&t),
         Err(_) => Default::default(),
     }
 }
@@ -404,11 +444,26 @@ async fn fetch_lhb_codes() -> std::collections::HashSet<String> {
 /// 候选池：涨幅榜 top + 主力净流入榜 top 合并去重，标记龙虎榜
 #[cfg(feature = "net")]
 pub async fn fetch_candidates() -> Result<Vec<Candidate>, String> {
-    let (gainers, inflow, lhb) = tokio::join!(
+    let (mut gainers, mut inflow, lhb) = tokio::join!(
         clist_rank("f3", 35),   // 涨幅榜
         clist_rank("f62", 35),  // 主力净流入榜
         fetch_lhb_codes(),
     );
+    // 东财 clist 两榜全空（重试后仍被掐/接口变动）→ 腾讯全市场成交额榜兜底：
+    // 取最活跃 80 支，本地按涨幅 / 主力净流入各排 35 支，候选池不再因东财单点故障变空
+    if gainers.is_empty() && inflow.is_empty() {
+        let pool = qq_rank_pool(80).await;
+        if !pool.is_empty() {
+            let mut by_chg = pool.clone();
+            by_chg.sort_by(|a, b| b.change_pct.partial_cmp(&a.change_pct).unwrap_or(std::cmp::Ordering::Equal));
+            by_chg.truncate(35);
+            let mut by_flow = pool;
+            by_flow.sort_by(|a, b| b.main_flow.partial_cmp(&a.main_flow).unwrap_or(std::cmp::Ordering::Equal));
+            by_flow.truncate(35);
+            gainers = by_chg;
+            inflow = by_flow;
+        }
+    }
     let mut map: std::collections::BTreeMap<String, Candidate> = std::collections::BTreeMap::new();
     for mut c in gainers.into_iter().chain(inflow.into_iter()) {
         // 龙虎榜标记（code 去前缀比对 6 位）
@@ -440,6 +495,24 @@ mod cand_tests {
         assert!((c[0].change_pct - 5.2).abs() < 0.01);
         assert_eq!(c[1].code, "sz000001");
         assert!(c[1].change_pct < 0.0); // 下跌股保留（不淘汰）
+    }
+
+    #[test]
+    fn test_parse_qq_rank() {
+        let raw = r#"{"code":0,"msg":"ok","data":{"rank_list":[
+            {"code":"sz300308","name":"中际旭创","zxj":"1129.00","zdf":"0.44","hsl":"1.78","zljlr":"-24995.37"},
+            {"code":"sh600519","name":"贵州茅台","zxj":"1281.55","zdf":"0.20","hsl":"0.16","zljlr":"-10481.01"},
+            {"code":"sz000007","name":"ST全新","zxj":"3.2","zdf":"1.0","hsl":"2.0","zljlr":"100.0"},
+            {"code":"bj430047","name":"诺思兰德","zxj":"10","zdf":"1","hsl":"1","zljlr":"1"}
+        ]}}"#;
+        let c = parse_qq_rank(raw);
+        assert_eq!(c.len(), 2); // ST 与北交所过滤
+        assert_eq!(c[0].code, "sz300308");
+        assert!((c[0].price - 1129.0).abs() < 0.01);
+        assert!((c[0].change_pct - 0.44).abs() < 0.01);
+        assert!((c[0].turnover - 1.78).abs() < 0.01);
+        assert!((c[0].main_flow - (-24995.37 * 1e4)).abs() < 1.0); // 万元 → 元
+        assert!(parse_qq_rank("x").is_empty());
     }
 
     #[test]

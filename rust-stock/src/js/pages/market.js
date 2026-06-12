@@ -251,11 +251,22 @@ function fmtNewsTime(s) {
   return s.slice(0, 10) === localToday ? s.slice(11, 16) : s.slice(5, 10);
 }
 
+let watchNewsHydrated = false;
+
 export async function loadWatchNews() {
   if (!inTauri) { watchNews = mockWatchNews; return; }
+  // 冷启动先回填上次成功的真实相关快讯（SQLite），网络刷新到手后无感替换
+  if (!watchNewsHydrated) {
+    watchNewsHydrated = true;
+    const saved = await storeGet('watch_news_cache', null);
+    if (Array.isArray(saved) && saved.length && !watchNews) watchNews = saved;
+  }
   if (!state.watchlist.length) { watchNews = []; return; }
   const items = await fetchStockNews(state.watchlist);
-  if (items !== null) watchNews = items;
+  if (items !== null) {
+    watchNews = items;
+    storeSet('watch_news_cache', items.slice(0, 20));
+  }
   await classifyWatchNews();
 }
 

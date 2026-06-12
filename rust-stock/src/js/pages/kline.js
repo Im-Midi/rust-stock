@@ -171,8 +171,16 @@ async function load() {
       const info = document.getElementById('klineInfo'); if (info) info.innerHTML = '';
       const panel = document.getElementById('chipPanel'); if (panel) panel.style.display = 'none';
       const indi = document.getElementById('klineIndi'); if (indi) indi.innerHTML = '';
-      document.getElementById('klineMeta').textContent =
-        `${cur.code.toUpperCase()} · K线加载失败（网络波动）· 点周期键或重进重试（不会用模拟数据冒充真实价）`;
+      const meta = document.getElementById('klineMeta');
+      meta.innerHTML =
+        `${cur.code.toUpperCase()} · K线加载失败（网络波动，不会用模拟数据冒充真实价） ` +
+        `<button id="klineRetry" class="kp-btn" type="button">↻ 重试</button>`;
+      const rb = document.getElementById('klineRetry');
+      if (rb) rb.addEventListener('click', () => {
+        rb.disabled = true;
+        load();              // 重新拉K线（成功路径会重写 klineMeta，按钮随之消失）
+        loadDetail(cur.code); // 行情快照/资金流一并重试
+      });
       return;
     }
     candles = mockCandles(cur.code); mocked = true; // 仅浏览器预览用假数据

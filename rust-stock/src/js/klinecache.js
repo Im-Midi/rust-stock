@@ -10,10 +10,54 @@
 //     瞬时网络波动不再把已经画出来的图打成白板（调用方可标注"缓存数据"）
 //   · mapLimit：有界并发工具（推荐页缩略图并发 3 支，不再串行排队几分钟）
 import { fetchKline } from './api.js';
+import { storeGet, storeSet } from './store.js';
 
 const TTL = 5 * 60 * 1000;
 const cache = new Map();    // `${code}|${period}` -> { candles, count, ts }
 const inflight = new Map(); // `${code}|${period}|${count}` -> Promise
+
+// ---------- 持久化（SQLite，经 storeSet/storeGet，与 watch_quotes_cache 同机制）----------
+// 目标：冷启动（哪怕离线）也能立即画出上次成功的真实K线/缩略图。
+// 约束：只存日K（周/月可重拉、占比小收益低）；最多 40 支（按最近成功时间挑）；
+//      每支只留最近 120 根（缩略图 30 根/筹码 80 根窗口都够用，K线页要 250 根
+//      会照常发起网络请求，离线时由 last-good 返回这 120 根真实数据）。
+// 写入防抖 3s：一轮预热会连续成功多支，合并成一次 SQLite 写。
+const PERSIST_KEY = 'kline_cache';
+const PERSIST_MAX_CODES = 40;
+const PERSIST_MAX_CANDLES = 120;
+let persistTimer = null;
+
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    try {
+      const entries = [...cache.entries()]
+        .filter(([k, v]) => k.endsWith('|day') && v && v.candles && v.candles.length)
+        .sort((a, b) => b[1].ts - a[1].ts)
+        .slice(0, PERSIST_MAX_CODES);
+      const obj = {};
+      for (const [k, v] of entries) {
+        const candles = v.candles.slice(-PERSIST_MAX_CANDLES);
+        obj[k] = { candles, count: Math.min(v.count, candles.length), ts: v.ts };
+      }
+      storeSet(PERSIST_KEY, obj);
+    } catch (e) { console.warn('K线缓存持久化失败:', e); }
+  }, 3000);
+}
+
+// 启动时回填内存缓存（main.js 在首屏渲染前调用一次）。
+// 回填的 ts 是上次成功时间：TTL 已过会照常重新拉取；拉取失败（离线/掐线）
+// 则由 last-good 机制返回这批真实历史数据 → 冷启动绝不白屏，也绝不造假数据。
+export async function hydrateKlineCache() {
+  try {
+    const saved = await storeGet(PERSIST_KEY, null);
+    if (!saved || typeof saved !== 'object') return;
+    for (const [k, v] of Object.entries(saved)) {
+      if (cache.has(k) || !v || !Array.isArray(v.candles) || !v.candles.length) continue;
+      cache.set(k, { candles: v.candles, count: v.count || v.candles.length, ts: v.ts || 0 });
+    }
+  } catch (e) { console.warn('K线缓存回填失败:', e); }
+}
 
 const tail = (arr, n) => (arr.length > n ? arr.slice(-n) : arr);
 
@@ -41,6 +85,7 @@ export async function getKline(code, period, count) {
         const cnt = Math.max(count, prev ? prev.count : 0);
         const ts = Date.now();
         cache.set(key, { candles: merged, count: cnt, ts });
+        if (period === 'day') schedulePersist(); // 成功数据落 SQLite（防抖合并）
         return { candles: tail(merged, count), stale: false, ts };
       }
     } catch (e) { console.warn('K线缓存层拉取异常:', e); }

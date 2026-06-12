@@ -218,8 +218,6 @@ pub async fn fetch_stock_news(codes: &[String]) -> Result<Vec<NewsItem>, String>
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let client = reqwest::Client::new();
-
     let mut futs = Vec::new();
     for code in codes.iter().take(10) {
         let Some(secid) = crate::sources::to_secid(code) else { continue };
@@ -227,15 +225,9 @@ pub async fn fetch_stock_news(codes: &[String]) -> Result<Vec<NewsItem>, String>
         let url = format!(
             "https://np-listapi.eastmoney.com/comm/web/getListInfo?client=web&mTypeAndCode={secid}&type=1&pageSize=6&req_trace={ts}"
         );
-        let client = client.clone();
         futs.push(async move {
-            let resp = client
-                .get(&url)
-                .header("Referer", "https://quote.eastmoney.com/")
-                .send()
-                .await
-                .ok()?;
-            let text = resp.text().await.ok()?;
+            // em_get_text：免 gzip + 3 次退避重试，与板块/资金流/K线同一可靠性等级
+            let text = crate::extra::em_get_text(&url, "https://quote.eastmoney.com/").await.ok()?;
             Some(parse_stock_news(&text, &name, &secid))
         });
     }
@@ -259,13 +251,9 @@ async fn fetch_news_n(page_size: u32) -> Result<Vec<NewsItem>, String> {
     let url = format!(
         "https://np-weblist.eastmoney.com/comm/web/getFastNewsList?client=web&biz=web_724&fastColumn=102&sortEnd=0&pageSize={page_size}&req_trace={ts}"
     );
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .header("Referer", "https://kuaixun.eastmoney.com/")
-        .send()
+    let text = crate::extra::em_get_text(&url, "https://kuaixun.eastmoney.com/")
         .await
         .map_err(|e| format!("快讯请求失败: {e}"))?;
-    let text = resp.text().await.map_err(|e| e.to_string())?;
     let items = parse_em_news(&text);
     if items.is_empty() {
         return Err("快讯解析为空（接口字段可能变了，把原始返回打出来对一下）".into());

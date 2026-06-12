@@ -7,6 +7,7 @@
 //   router.js  页面切换（渲染钩子在本文件注册）
 //   pages/     行情 / 快讯 / 自选 / 聊天 / 设置
 import { loadAll, state, saveSettings } from './js/store.js';
+import { hydrateKlineCache } from './js/klinecache.js';
 import { invoke, isMobile } from './js/bridge.js';
 import { initScale } from './js/ui.js';
 import { initNav, onShow, currentPage } from './js/router.js';
@@ -61,27 +62,33 @@ function initCloseModal() {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
 }
 
-// ---------- 定时刷新 ----------
+// ---------- 定时刷新（前台实时 + 后台保温）----------
+// 设计：当前页每个 interval 都刷（和以前一样实时）；非当前页不再彻底变冷，
+// 而是低频"保温"——每 3 个 interval 刷一次，且情绪/板块与自选行情错开 1 拍，
+// 避免同一秒并发打东财（rustls 偶发掐线对请求突发最敏感）。
+// 保温的真实开销很低：renderHeat 自带 25s last-good 节流，自选行情走
+// fetchQuotes 单请求，AI 打分按日缓存命中后为 0 请求。
 let timer = null;
+let tick = 0;
 function restartTimer() {
   clearInterval(timer);
+  tick = 0;
   timer = setInterval(() => {
+    tick++;
     const p = currentPage();
     renderTicker();                 // 顶部指数条所有页可见，始终刷新
-    if (p === 'market') { renderSentiment(); renderHeat(); } // 行情页：情绪+板块实时
-    if (p === 'watch') renderWatch();                        // 自选页：自选价格实时
+    if (p === 'market') { renderSentiment(); renderHeat(); }      // 前台实时
+    else if (tick % 3 === 0) { renderSentiment(); renderHeat(); } // 后台保温
+    if (p === 'watch') renderWatch();                             // 前台实时
+    else if (tick % 3 === 1) renderWatch();                       // 后台保温（错 1 拍）
   }, state.settings.interval * 1000);
 }
 
-// 快讯独立节奏：60s 一次（快讯页=全量 7×24；行情页=自选股相关）
-setInterval(async () => {
-  if (currentPage() === 'news') {
-    await loadNews();
-    renderFeed('feedFull');
-  } else if (currentPage() === 'market') {
-    await loadWatchNews();
-    renderWatchNews();
-  }
+// 快讯独立节奏：不再只刷当前页——两路快讯都后台保温，切页即见最新。
+// 全量 7×24 每 60s；自选股相关错峰 20s 再拉（不与 7×24 同拍打接口）。
+setInterval(() => {
+  loadNews().then(() => renderFeed('feedFull'));
+  setTimeout(() => { loadWatchNews().then(renderWatchNews); }, 20_000);
 }, 60_000);
 
 // ---------- 主题（磨砂奶白/磨砂黑，按本机时间自动切换；设置可锁定）----------
@@ -98,10 +105,12 @@ export function applyTheme() {
   document.body.classList.toggle('mobile', isMobile);
   applyTheme();
   initScale();
-  await loadAll(); // 先取 SQLite（浏览器回退 localStorage），再首屏渲染
+  // SQLite 持久层并发回填：设置/自选/AI 缓存 + K线缓存（冷启动离线也能画上次真实K线）
+  await Promise.all([loadAll(), hydrateKlineCache()]);
   applyTheme(); // 设置载入后按 theme 偏好重判
   setInterval(applyTheme, 5 * 60 * 1000); // 每5分钟重判，自动在 6:00/18:00 切换
 
+  // 切页 = 先画缓存（瞬时），再后台刷新——onShow 不被 await，导航永不等网络
   onShow('news', () => { renderFeed('feedFull'); loadNews().then(() => renderFeed('feedFull')); });
   onShow('watch', renderWatch);
   onShow('market', () => { renderWatchNews(); loadWatchNews().then(renderWatchNews); });
@@ -116,13 +125,20 @@ export function applyTheme() {
   initKline();
   initSettings(() => { restartTimer(); renderTicker(); renderWatch(); renderRecommend(); });
 
-  renderHeat();
+  // ---------- 启动并发预热：四路主数据并行拉取，互不阻塞、不阻塞首屏 ----------
+  // 此前是串行 await（情绪→推荐→自选快讯…），一路被掐全队列等待，
+  // 且自选/快讯页要等用户点进去才开始冷加载。现在全部并行 fire：
+  //   ① 指数条 ② 情绪→推荐（推荐 prompt 依赖情绪结果，保持这一条内部顺序）
+  //   ③ 板块热力 ④ 自选行情+AI ⑤ 全量快讯 ⑥ 自选相关快讯（错峰 3s，削请求尖峰）
+  // 各路自己写缓存并渲染（隐藏页 DOM 照常更新），用户切过去就是现成数据。
   renderTicker();
-  await renderSentiment(); // 推荐的盘面背景依赖情绪结果
-  initRecommend();
-  renderRecommend();
-  await loadWatchNews();   // 行情页：自选股相关快讯
-  renderWatchNews();
+  renderHeat();
+  renderRecommend(); // 今日推荐缓存先行：有缓存立即渲染并预热缩略图K线
+  renderSentiment().catch(() => {}).then(() => { initRecommend(); renderRecommend(); });
+  renderWatch();
+  loadNews().then(() => renderFeed('feedFull'));
+  setTimeout(() => { loadWatchNews().then(renderWatchNews); }, 3000);
+
   restartTimer();
   refreshCalendar();                       // 拉最新节假日（best-effort）
   checkAlarms();                            // 立即查一次报警
