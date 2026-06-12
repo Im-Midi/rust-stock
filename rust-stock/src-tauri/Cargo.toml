@@ -1,6 +1,6 @@
 [package]
 name = "rust-stock"
-version = "1.0.1"
+version = "1.5.0"
 description = "rust-stock — 可吸附边缘的悬浮行情助手"
 edition = "2021"
 
