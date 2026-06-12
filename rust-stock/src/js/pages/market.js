@@ -89,18 +89,26 @@ let lastSentiment = null;
 export const getSentiment = () => lastSentiment;
 const sentWhyCache = {}; // day|label|分桶 → AI 解读（会话内缓存）
 
-export async function renderSentiment() {
-  let s = await fetchSentiment();
-  if (!s) s = { score: -45.97, label: '偏空谨慎', components: [
-    { name: '上证指数', change_pct: -0.81, weight: 0.35 },
-    { name: '深证成指', change_pct: -0.65, weight: 0.25 },
-    { name: '创业板指', change_pct: -1.10, weight: 0.20 },
-    { name: '沪深300', change_pct: -0.74, weight: 0.20 },
-  ] };
-  lastSentiment = s;
+// 缓存/沿用数据的诚实时间标注：当天 "HH:MM"，往日 "MM-DD HH:MM"
+function fmtCacheTs(ts) {
+  const d = new Date(ts || 0);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const hm = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm}`;
+}
+
+// 情绪 last-good + SQLite 持久化（sent_cache）：
+//   · 本次成功 → 内存 last-good + 60s 节流落盘
+//   · 本次失败但有历史真实数据 → 沿用并标「沿用/缓存 HH:MM」（绝不造假）
+//   · 冷启动由 hydrateMarketCache() 回填上次真实情绪，首屏不再是演示占位
+let lastSentTs = 0;       // lastSentiment 对应的数据时刻
+let sentFromDisk = false; // true = 来自冷启动回填（meta 标「缓存」）
+let sentPersistTs = 0;    // 上次落盘时刻（60s 节流）
+
+function paintSentiment(s, metaTxt) {
   const score = Math.max(-100, Math.min(100, s.score));
   document.getElementById('sentVal').textContent = (score > 0 ? '+' : '') + score.toFixed(1);
-  document.getElementById('sentMeta').textContent = nowHMS();
+  document.getElementById('sentMeta').textContent = metaTxt;
   const tag = document.getElementById('sentTag');
   tag.textContent = s.label;
   if (score >= 25) { tag.style.background = 'rgba(255,77,79,.15)'; tag.style.color = 'var(--up)'; }
@@ -112,6 +120,32 @@ export async function renderSentiment() {
     needle.style.transformBox = 'view-box';
     needle.setAttribute('transform', `rotate(${score * 0.9} 100 100)`);
   }
+}
+
+export async function renderSentiment() {
+  const s = await fetchSentiment();
+  if (s) {
+    lastSentiment = s; lastSentTs = Date.now(); sentFromDisk = false;
+    if (Date.now() - sentPersistTs > 60_000) {
+      sentPersistTs = Date.now();
+      storeSet('sent_cache', { s, ts: lastSentTs }); // 真实情绪落盘（SQLite）
+    }
+    paintSentiment(s, nowHMS());
+    return;
+  }
+  if (lastSentiment) { // 本次失败 → 沿用最近真实数据（含冷启动回填），时间诚实标注
+    paintSentiment(lastSentiment, (sentFromDisk ? '缓存 ' : '沿用 ') + fmtCacheTs(lastSentTs));
+    return;
+  }
+  // 从未成功过且无缓存 → 演示占位（唯一兜底路径；meta 诚实标「演示数据」）
+  const demo = { score: -45.97, label: '偏空谨慎', components: [
+    { name: '上证指数', change_pct: -0.81, weight: 0.35 },
+    { name: '深证成指', change_pct: -0.65, weight: 0.25 },
+    { name: '创业板指', change_pct: -1.10, weight: 0.20 },
+    { name: '沪深300', change_pct: -0.74, weight: 0.20 },
+  ] };
+  if (!inTauri) lastSentiment = demo; // 浏览器预览允许翻面看演示解读；真机不把演示数据留存为真
+  paintSentiment(demo, '演示数据');
 }
 
 // 真实板块（取最强 4 + 最弱 2 凑 6 格）。失败回退演示数据并记录原因。
@@ -140,40 +174,15 @@ async function pickSectors() {
 // 最近一次成功的真实板块（last-good 缓存）：失败时沿用，避免频繁请求触发的
 // rustls 偶发中断把界面打回"演示数据/请求失败"。
 let lastSectors = null;
-let lastSectorTs = 0;
+let lastSectorTs = 0;        // lastSectors 对应的数据时刻（本次成功 or 冷启动回填的落盘时刻）
+let sectorsFromDisk = false; // true = 来自冷启动回填（meta 标「缓存」，且强制发起一次真实拉取）
+let heatPersistTs = 0;       // 上次落盘时刻（60s 节流）
 let heatBusy = false;
 
-export async function renderHeat() {
+function paintHeat(data, metaTxt, real = true) {
   const grid = document.getElementById('heatGrid');
   const meta = document.getElementById('heatMeta');
-  let data, real = true, metaTxt;
-
-  const freshMs = Date.now() - lastSectorTs;
-  if (lastSectors && freshMs < 25000) {
-    // 25s 内有成功数据：直接复用，不再发请求（降低偶发中断概率）
-    data = lastSectors; metaTxt = nowHMS();
-  } else if (heatBusy) {
-    // 已有请求在途：保持现状
-    if (!lastSectors) return;
-    data = lastSectors; metaTxt = nowHMS();
-  } else {
-    heatBusy = true;
-    let got = null;
-    try { got = await pickSectors(); } finally { heatBusy = false; }
-    if (got) {
-      lastSectors = got; lastSectorTs = Date.now();
-      data = got; metaTxt = nowHMS();
-    } else if (lastSectors) {
-      // 本次失败但有历史真实数据 → 沿用，不退演示、不报错
-      data = lastSectors;
-      metaTxt = '沿用 ' + new Date(lastSectorTs).toTimeString().slice(0, 8);
-    } else {
-      // 从未成功过 → 才回退演示
-      data = heat; real = false;
-      metaTxt = sectorErr ? '演示·' + sectorErr : '演示数据';
-    }
-  }
-
+  if (!grid) return;
   grid.innerHTML = data.map(h =>
     `<div class="heat-cell"><span class="h-name">${h.name}</span><span class="h-chg">${h.chg}</span></div>`
   ).join('');
@@ -189,6 +198,62 @@ export async function renderHeat() {
     if (chg) chg.style.color = c.fg;
   });
   if (meta) { meta.textContent = metaTxt; meta.title = real ? '' : '演示数据（接口暂未成功）'; }
+}
+
+export async function renderHeat() {
+  let data, real = true, metaTxt;
+
+  const freshMs = Date.now() - lastSectorTs;
+  if (lastSectors && !sectorsFromDisk && freshMs < 25000) {
+    // 25s 内有成功数据：直接复用，不再发请求（降低偶发中断概率）
+    data = lastSectors; metaTxt = nowHMS();
+  } else if (heatBusy) {
+    // 已有请求在途：保持现状
+    if (!lastSectors) return;
+    data = lastSectors;
+    metaTxt = sectorsFromDisk ? '缓存 ' + fmtCacheTs(lastSectorTs) : nowHMS();
+  } else {
+    heatBusy = true;
+    let got = null;
+    try { got = await pickSectors(); } finally { heatBusy = false; }
+    if (got) {
+      lastSectors = got; lastSectorTs = Date.now(); sectorsFromDisk = false;
+      if (Date.now() - heatPersistTs > 60_000) {
+        heatPersistTs = Date.now();
+        storeSet('heat_cache', { data: got, ts: lastSectorTs }); // 真实板块落盘（SQLite）
+      }
+      data = got; metaTxt = nowHMS();
+    } else if (lastSectors) {
+      // 本次失败但有历史真实数据（含冷启动回填）→ 沿用，不退演示、不报错
+      data = lastSectors;
+      metaTxt = (sectorsFromDisk ? '缓存 ' : '沿用 ') + fmtCacheTs(lastSectorTs);
+    } else {
+      // 从未成功过且无缓存 → 才回退演示
+      data = heat; real = false;
+      metaTxt = sectorErr ? '演示·' + sectorErr : '演示数据';
+    }
+  }
+
+  paintHeat(data, metaTxt, real);
+}
+
+// ---------- 冷启动回填（SQLite heat_cache / sent_cache）----------
+// main.js 启动时与 hydrateKlineCache 并发调用：上次真实板块/情绪立即上屏并
+// 种入内存 last-good，离线/接口被掐时首屏也是真数据（meta 标「缓存 HH:MM」），
+// 网络刷新成功后无感替换。演示数据从此只剩"从未成功且无缓存"一种触发路径。
+export async function hydrateMarketCache() {
+  if (!inTauri) return; // 浏览器预览走 mock，无需回填
+  try {
+    const [hc, sc] = await Promise.all([storeGet('heat_cache', null), storeGet('sent_cache', null)]);
+    if (hc && Array.isArray(hc.data) && hc.data.length && !lastSectors) {
+      lastSectors = hc.data; lastSectorTs = hc.ts || 0; sectorsFromDisk = true;
+      paintHeat(hc.data, '缓存 ' + fmtCacheTs(lastSectorTs));
+    }
+    if (sc && sc.s && typeof sc.s.score === 'number' && !lastSentiment) {
+      lastSentiment = sc.s; lastSentTs = sc.ts || 0; sentFromDisk = true;
+      paintSentiment(sc.s, '缓存 ' + fmtCacheTs(lastSentTs));
+    }
+  } catch (e) { console.warn('行情缓存回填失败:', e); }
 }
 
 // 点击情绪表盘 → 翻面看"为什么是这个档位"

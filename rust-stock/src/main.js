@@ -11,7 +11,7 @@ import { hydrateKlineCache } from './js/klinecache.js';
 import { invoke, isMobile } from './js/bridge.js';
 import { initScale } from './js/ui.js';
 import { initNav, onShow, currentPage } from './js/router.js';
-import { renderTicker, renderSentiment, renderHeat, initMarket, loadWatchNews, renderWatchNews } from './js/pages/market.js';
+import { renderTicker, renderSentiment, renderHeat, initMarket, loadWatchNews, renderWatchNews, hydrateMarketCache } from './js/pages/market.js';
 import { refreshCalendar } from './js/tradingcal.js';
 import { checkAlarms } from './js/alarm.js';
 import { loadNews, renderFeed, initNews } from './js/pages/news.js';
@@ -91,6 +91,35 @@ setInterval(() => {
   setTimeout(() => { loadWatchNews().then(renderWatchNews); }, 20_000);
 }, 60_000);
 
+// ---------- 前台唤醒保温（安卓回前台立即补一拍）----------
+// Android 把 App 切后台时会节流甚至冻结 WebView 定时器，回前台那一刻
+// 界面可能停在几分钟前。监听 visibilitychange（focus 兜底）：一回前台就
+// 并行刷新当前页 + 关键缓存。全部复用现有渲染器的 last-good/in-flight
+// 去重/25s 节流，请求量与正常一拍相当；5s 防抖吞掉 visibilitychange 与
+// focus 的双触发、快速切换连发，也不会与刚恢复的定时器拍子叠加双发。
+let lastResumeWarm = Date.now(); // 启动流程本身就是一次全量预热，吞掉启动时的首个 focus
+function warmOnResume() {
+  if (document.visibilityState !== 'visible') return;
+  const now = Date.now();
+  if (now - lastResumeWarm < 5000) return;
+  lastResumeWarm = now;
+  // 全部 fire-and-forget 并行，不阻塞 UI；失败由各自的 last-good 兜底（绝不 mock）
+  renderTicker();
+  renderSentiment().catch(() => {});
+  renderHeat();
+  renderWatch(); // 自选行情（单请求，AI 打分按日缓存命中后 0 请求）
+  if (currentPage() === 'news') {
+    loadNews().then(() => renderFeed('feedFull'));
+    setTimeout(() => { loadWatchNews().then(renderWatchNews); }, 3000);
+  } else {
+    loadWatchNews().then(renderWatchNews);
+    setTimeout(() => { loadNews().then(() => renderFeed('feedFull')); }, 3000);
+  }
+  checkAlarms(); // 报警轮询可能在后台错过了拍子，回前台立即补查
+}
+document.addEventListener('visibilitychange', warmOnResume);
+window.addEventListener('focus', warmOnResume);
+
 // ---------- 主题（磨砂奶白/磨砂黑，按本机时间自动切换；设置可锁定）----------
 export function applyTheme() {
   const m = (state.settings && state.settings.theme) || 'auto'; // auto|day|night
@@ -105,8 +134,9 @@ export function applyTheme() {
   document.body.classList.toggle('mobile', isMobile);
   applyTheme();
   initScale();
-  // SQLite 持久层并发回填：设置/自选/AI 缓存 + K线缓存（冷启动离线也能画上次真实K线）
-  await Promise.all([loadAll(), hydrateKlineCache()]);
+  // SQLite 持久层并发回填：设置/自选/AI 缓存 + K线缓存 + 板块热力/情绪快照
+  // （冷启动哪怕离线，K线/板块/情绪首屏都是上次真实数据，meta 标「缓存」）
+  await Promise.all([loadAll(), hydrateKlineCache(), hydrateMarketCache()]);
   applyTheme(); // 设置载入后按 theme 偏好重判
   setInterval(applyTheme, 5 * 60 * 1000); // 每5分钟重判，自动在 6:00/18:00 切换
 
