@@ -63,6 +63,34 @@ export async function fetchFundFlow(code) {
   catch (e) { console.warn('资金流获取失败:', e); return null; }
 }
 
+// 历史主力资金流（近 N 个交易日，升序旧→新；失败 null 由调用方隐藏区块）
+export async function fetchFlowHistory(code, days = 5) {
+  if (!inTauri) return null;
+  try {
+    const r = await invoke('fetch_flow_history', { code, days });
+    return (Array.isArray(r) && r.length) ? r : null;
+  } catch (e) { console.warn('历史资金流失败:', e); return null; }
+}
+
+// 个股所属板块/概念（行业排最前；失败 null）
+export async function fetchStockBoards(code) {
+  if (!inTauri) return null;
+  try {
+    const r = await invoke('fetch_stock_boards', { code });
+    return (Array.isArray(r) && r.length) ? r : null;
+  } catch (e) { console.warn('所属板块失败:', e); return null; }
+}
+
+// 北向资金（沪深港通）近 5 个交易日成交金额（亿元，最新在前）。
+// 净买额 2024-08 起已停披，接口只给成交额——展示侧如实标注。
+export async function fetchNorthFlow() {
+  if (!inTauri) return null;
+  try {
+    const r = await invoke('fetch_north_flow');
+    return (Array.isArray(r) && r.length) ? r : null;
+  } catch (e) { console.warn('北向资金失败:', e); return null; }
+}
+
 export async function classifyNews(titles) {
   if (!inTauri) return null;
   try {

@@ -97,6 +97,26 @@ async fn fetch_candidates() -> Result<Vec<extra::Candidate>, String> {
     extra::fetch_candidates().await
 }
 
+/// 历史主力资金流（近 N 个交易日，东财 fflow daykline，升序旧→新）
+#[tauri::command]
+async fn fetch_flow_history(code: String, days: u32) -> Result<Vec<extra::FlowDay>, String> {
+    extra::fetch_flow_history(&code, days).await
+}
+
+/// 个股所属板块/概念（东财 F10，行业排最前，已滤指数成分类噪音）
+#[tauri::command]
+async fn fetch_stock_boards(code: String) -> Result<Vec<extra::StockBoard>, String> {
+    extra::fetch_stock_boards(&code).await
+}
+
+/// 北向资金（沪深港通）近 5 个交易日成交金额（亿元）。
+/// 净买额自 2024-08 起交易所不再披露（实时接口恒 0、历史字段为 null），
+/// 仍披露的只有按日成交金额——前端如实标注口径，绝不伪造净流入。
+#[tauri::command]
+async fn fetch_north_flow() -> Result<Vec<extra::NorthDay>, String> {
+    extra::fetch_north_flow().await
+}
+
 /// 自选股相关快讯（行情页"自选股信息"卡片）
 #[tauri::command]
 async fn fetch_stock_news(codes: Vec<String>) -> Result<Vec<feed::NewsItem>, String> {
@@ -752,6 +772,9 @@ pub fn run() {
             fetch_sectors,
             fetch_fund_flow,
             fetch_candidates,
+            fetch_flow_history,
+            fetch_stock_boards,
+            fetch_north_flow,
             fetch_sentiment,
             fetch_kline,
             ai_recommend,

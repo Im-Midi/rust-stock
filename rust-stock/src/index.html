@@ -680,6 +680,19 @@
   .sd-flow-row .fbar { flex: 1; height: 8px; background: var(--surface-3); border-radius: 4px; overflow: hidden; position: relative; }
   .sd-flow-row .fbar i { position: absolute; top: 0; bottom: 0; display: block; }
   .sd-flow-row .fv { font-family: 'DM Mono', monospace; width: 116px; text-align: right; flex-shrink: 0; font-size: 10px; }
+  /* 所属板块/概念 chips（行业高亮描边） */
+  .sd-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .sd-chip { font-size: 10px; color: var(--txt-2); background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 999px; padding: 2px 8px; line-height: 1.5; }
+  .sd-chip.ind { color: var(--accent); border-color: var(--accent); }
+  /* 近5日主力净流入（日级历史） */
+  .sd-hist { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+  .sd-hist-cell { background: var(--surface-2); border-radius: var(--radius-sm); padding: 5px 3px; text-align: center; }
+  .sd-hist-cell .d { font-size: 9px; color: var(--txt-3); }
+  .sd-hist-cell .v { font-size: 10px; font-family: 'DM Mono', monospace; margin-top: 1px; }
+  /* 北向资金一行（行情页，市场情绪卡下方；数据缺失时整行隐藏） */
+  .north-line { display: none; font-size: 10px; color: var(--txt-3); margin: -6px 4px 10px; font-family: 'DM Mono', monospace; }
+  .north-line.show { display: block; }
+  .north-line b { color: var(--txt-2); font-weight: 500; }
 
   /* AI 聊天 */
   .chat-log { display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
@@ -795,6 +808,9 @@
           </div>
         </div>
       </div>
+
+      <!-- 北向资金（沪深港通成交额；净买额 2024-08 起交易所已停止披露，绝不伪造） -->
+      <div class="north-line" id="northLine"></div>
 
       <!-- 今日 AI 推荐 -->
       <div class="card fade-in" style="animation-delay:.03s">

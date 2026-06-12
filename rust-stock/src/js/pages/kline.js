@@ -1,16 +1,18 @@
 // pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
-import { fetchQuotes, fetchFundFlow, analyzeStock } from '../api.js';
+import { fetchQuotes, fetchFundFlow, fetchFlowHistory, fetchStockBoards, analyzeStock } from '../api.js';
 import { getKline } from '../klinecache.js';
 import { calcChips } from '../chip.js';
 import { indicatorSummary } from '../mytt.js';
 import { switchPage } from '../router.js';
 import { showAnalysis } from './analysis.js';
 import { flashHint } from '../ui.js';
-import { aiReady } from '../store.js';
+import { aiReady, storeGet, storeSet, today } from '../store.js';
 import { inTauri, isMobile } from '../bridge.js';
 
 const cur = { code: null, name: '', period: 'day' };
+// 当前股的扩展维度（所属板块/概念 + 近5日主力净流入），loadDetail 填充、aiAnalyze 注入上下文
+const extras = { code: null, boards: null, flows: null };
 let data = [];                      // 全量K线缓存（最多 250 根）
 let view = { start: 0, count: 90 }; // 当前可视窗口
 const FETCH_N = 250;
@@ -234,6 +236,15 @@ async function aiAnalyze() {
     parts.push(`技术指标(通达信口径)：MACD ${cz(ind.macd.cross)}(DIF ${ind.macd.dif.toFixed(2)}/DEA ${ind.macd.dea.toFixed(2)})；KDJ ${cz(ind.kdj.cross)}(K${ind.kdj.k.toFixed(0)}/D${ind.kdj.d.toFixed(0)}/J${ind.kdj.j.toFixed(0)})；RSI6 ${ind.rsi.r6.toFixed(0)}；BOLL 上${ind.boll.up.toFixed(2)}/中${ind.boll.mid.toFixed(2)}/下${ind.boll.low.toFixed(2)}`);
   }
   if (data.length >= 20) { const a = data[data.length - 20].close; if (a) parts.push(`近20交易日累计 ${((last.close - a) / a * 100).toFixed(1)}%`); }
+  // 扩展维度（loadDetail 已并行取好；与当前股不匹配时不注入，避免串台）
+  if (extras.code === cur.code && extras.boards && extras.boards.length) {
+    parts.push(`所属概念/板块: ${extras.boards.map(b => b.name).join('、')}`);
+  }
+  if (extras.code === cur.code && extras.flows && extras.flows.length) {
+    const recent = extras.flows.slice(-5);
+    const sum = recent.reduce((a, d) => a + d.main, 0);
+    parts.push(`近${recent.length}日主力净流入(日): ${recent.map(d => `${d.date.slice(5)} ${fmtAmt(d.main)}`).join('，')}；合计 ${fmtAmt(sum)}`);
+  }
   const context = '截至最新交易日，本股真实数据如下：\n' + parts.join('\n');
   aiBusy = true;
   flashHint('AI 解读中…（结合筹码/指标）');
@@ -303,13 +314,33 @@ function fmtAmt(yuan) {
   return `${sign}${a.toFixed(0)}`;
 }
 
+// 所属板块/概念按日缓存（板块隶属变化极慢，SQLite 持久化，过期缓存可作离线兜底）
+async function loadBoards(code) {
+  const key = 'boards_' + code;
+  const cached = await storeGet(key, null);
+  const valid = cached && Array.isArray(cached.boards) && cached.boards.length;
+  if (valid && cached.date === today()) return cached.boards;
+  const fresh = await fetchStockBoards(code);
+  if (fresh) { storeSet(key, { date: today(), boards: fresh }); return fresh; }
+  return valid ? cached.boards : null; // 拉取失败 → 沿用旧缓存（绝不造假，没有就不显示）
+}
+
 async function loadDetail(code) {
   const el = document.getElementById('stockDetail');
   el.innerHTML = '';
-  // 并行取行情快照 + 资金流（换手率随资金流接口一起来）
-  const [quotes, ff] = await Promise.all([fetchQuotes([code]), fetchFundFlow(code)]);
+  // 并行取行情快照 + 资金流（换手率随资金流接口一起来）+ 近5日主力净流入 + 所属板块
+  const [quotes, ff, flows, boards] = await Promise.all([
+    fetchQuotes([code]), fetchFundFlow(code), fetchFlowHistory(code, 5), loadBoards(code),
+  ]);
+  if (code !== cur.code) return; // 等待期间已切到别的股票，丢弃过期渲染
+  extras.code = code; extras.flows = flows; extras.boards = boards;
   const q = quotes && quotes[0];
   let html = '';
+  // 所属板块/概念 chips（行业高亮）
+  if (boards && boards.length) {
+    html += '<div class="sd-chips">' + boards.map(b =>
+      `<span class="sd-chip${b.kind === '行业' ? ' ind' : ''}">${b.name}</span>`).join('') + '</div>';
+  }
   if (q) {
     const volWan = (q.volume / 1e4).toFixed(0); // 手→万手 约略
     const amp = q.prev_close ? (q.high - q.low) / q.prev_close * 100 : 0;
@@ -354,6 +385,15 @@ async function loadDetail(code) {
         <span class="fbar"><i class="fbar-fill" data-w="${w}" data-inflow="${inflow ? 1 : 0}"></i></span>
         <span class="fv ${cls}">${fmtAmt(val)}${pct}</span></div>`;
     }).join('') + '</div>';
+  }
+  // 近5日主力净流入（日级历史，红流入/绿流出；接口升序旧→新，取尾部 5 根）
+  if (flows && flows.length) {
+    const recent = flows.slice(-5);
+    html += '<div class="sd-flow-title">近5日主力净流入（日）</div><div class="sd-hist">' +
+      recent.map(d => {
+        const cls = d.main >= 0 ? 'up-c' : 'down-c';
+        return `<div class="sd-hist-cell"><div class="d">${d.date.slice(5)}</div><div class="v ${cls}">${fmtAmt(d.main)}</div></div>`;
+      }).join('') + '</div>';
   }
   el.innerHTML = html;
   // 资金流条上色：逐属性 CSSOM 赋值，绕过 CSP 对内联 style 的拦截

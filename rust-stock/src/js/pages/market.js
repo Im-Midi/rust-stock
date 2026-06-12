@@ -1,5 +1,5 @@
 // pages/market.js — 行情页：指数滚动条、市场情绪表盘（可翻面）、板块热力
-import { INDEX_CODES, fetchQuotes, fetchSentiment, explainSentiment, fetchStockNews, classifyNews, fetchSectors } from '../api.js';
+import { INDEX_CODES, fetchQuotes, fetchSentiment, explainSentiment, fetchStockNews, classifyNews, fetchSectors, fetchNorthFlow } from '../api.js';
 import { state, today, aiReady } from '../store.js';
 import { storeGet, storeSet } from '../store.js';
 import { nowHMS, flashHint } from '../ui.js';
@@ -237,6 +237,32 @@ export async function renderHeat() {
   paintHeat(data, metaTxt, real);
 }
 
+// ---------- 北向资金（沪深港通）成交额 ----------
+// ⚠️ 交易所 2024-08 新规后，北向"净买额"实时与历史均已停止披露（实时接口恒 0，
+// 历史报表净买额字段为 null，2026-06-12 复核）。仍按日披露的只有成交金额（次日更新）
+// → 这里展示最近交易日北向成交额并如实标注口径；取不到数据就整行隐藏，绝不伪造。
+let northBusy = false;
+export async function renderNorth() {
+  const el = document.getElementById('northLine');
+  if (!el || !inTauri || northBusy) return;
+  northBusy = true;
+  try {
+    const cached = await storeGet('north_cache', null);
+    let list = (cached && Array.isArray(cached.list) && cached.list.length) ? cached.list : null;
+    // 日级数据：缓存 2 小时内直接用；过期才重新拉，失败沿用旧缓存
+    if (!list || Date.now() - (cached.ts || 0) > 2 * 3600_000) {
+      const fresh = await fetchNorthFlow();
+      if (fresh) { list = fresh; storeSet('north_cache', { list, ts: Date.now() }); }
+    }
+    if (!list || !list.length) { el.classList.remove('show'); el.textContent = ''; return; }
+    const d = list[0]; // 最新披露交易日（沪/深股通成交额，亿元）
+    const total = Math.round(d.hu + d.sz);
+    el.innerHTML = `北向资金 ${d.date.slice(5)} 成交 <b>${total}亿</b>（沪 ${Math.round(d.hu)} + 深 ${Math.round(d.sz)}）· 净买额自2024-08起不再披露`;
+    el.classList.add('show');
+  } catch (e) { console.warn('北向资金渲染失败:', e); }
+  finally { northBusy = false; }
+}
+
 // ---------- 冷启动回填（SQLite heat_cache / sent_cache）----------
 // main.js 启动时与 hydrateKlineCache 并发调用：上次真实板块/情绪立即上屏并
 // 种入内存 last-good，离线/接口被掐时首屏也是真数据（meta 标「缓存 HH:MM」），
@@ -399,6 +425,8 @@ export function initMarket() {
     document.getElementById('sentFlip').classList.remove('flipped');
   });
   if (!inTauri) console.log('[preview] 浏览器预览模式，行情/情绪走 mock');
+  renderNorth();
+  setInterval(renderNorth, 30 * 60_000); // 日级数据，低频复查（自带 2h 缓存）
   updateMktBanner();
   setInterval(updateMktBanner, 30000); // 每 30s 复核交易时段
 }

@@ -524,3 +524,298 @@ mod cand_tests {
         assert!(parse_lhb_codes("x").is_empty());
     }
 }
+
+// ============================================================
+// 三个 A 股数据维度（接口设计参考 1nchaos/adata 的接口字典，Apache-2.0，
+// 未复制其代码；全部接口 2026-06-12 经真实请求复核形状）：
+//   ① 历史主力资金流（日）  ② 个股所属板块/概念  ③ 北向（沪深港通）成交
+// ============================================================
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowDay {
+    pub date: String,       // YYYY-MM-DD
+    pub main: f64,          // 主力净流入（元，= 大单+超大单净额）
+    pub main_pct: f64,      // 主力净占比 %
+    pub close: f64,         // 收盘价
+    pub change_pct: f64,    // 涨跌幅 %
+}
+
+/// 解析东财历史资金流 fflow/daykline/get（2026-06-12 实测）：
+/// data.klines = ["2026-06-11,-95013600.0,-81509.0,95095120.0,-80124064.0,
+///                 -14889536.0,-2.94,-0.00,2.94,-2.48,-0.46,1279.00,0.24,0.00,0.00",…]
+/// 列序（fields2=f51..f65）：0日期 1主力净额 2小单 3中单 4大单 5超大单
+///   6主力净占比% 7小单% 8中单% 9大单% 10超大单% 11收盘价 12涨跌幅% 13/14恒0
+/// （列序经实测校验：主力净额 == 大单+超大单 净额之和）
+pub fn parse_flow_days(body: &str) -> Vec<FlowDay> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let arr = match v["data"]["klines"].as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+    arr.iter()
+        .filter_map(|row| {
+            let s = row.as_str()?;
+            let f: Vec<&str> = s.split(',').collect();
+            if f.len() < 13 || f[0].len() != 10 {
+                return None;
+            }
+            let p = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
+            Some(FlowDay {
+                date: f[0].to_string(),
+                main: p(1),
+                main_pct: p(6),
+                close: p(11),
+                change_pct: p(12),
+            })
+        })
+        .collect()
+}
+
+/// 近 N 个交易日主力资金流（升序：旧→新，与接口返回一致）
+#[cfg(feature = "net")]
+pub async fn fetch_flow_history(code: &str, days: u32) -> Result<Vec<FlowDay>, String> {
+    let secid = crate::sources::to_secid(code).ok_or_else(|| format!("无法识别代码: {code}"))?;
+    let lmt = days.clamp(1, 60);
+    let url = format!(
+        "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt={lmt}&klt=101\
+         &fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65\
+         &secid={secid}"
+    );
+    let text = em_get_text(&url, "https://quote.eastmoney.com/")
+        .await
+        .map_err(|e| format!("历史资金流请求失败: {e}"))?;
+    let list = parse_flow_days(&text);
+    if list.is_empty() {
+        return Err("历史资金流解析为空".into());
+    }
+    Ok(list)
+}
+
+// ------------------------------------------------------------
+// 个股所属板块 / 概念（东财 F10 RPT_F10_CORETHEME_BOARDTYPE）
+// ------------------------------------------------------------
+#[derive(Debug, Clone, Serialize)]
+pub struct StockBoard {
+    pub name: String,
+    pub code: String,
+    pub kind: String, // 行业 / 板块（地域） / 概念
+}
+
+/// 指数成分、持仓风格类"伪概念"黑名单（子串命中即丢——既不展示也不进 AI 上下文）
+const BOARD_NOISE: &[&str] = &[
+    "标准普尔", "富时罗素", "MSCI", "沪股通", "深股通", "融资融券", "转融券",
+    "上证50", "上证180", "上证380", "央视50", "HS300", "中证500", "深成500",
+    "百元股", "高价股", "低价股", "大盘股", "中盘股", "小盘股", "微盘股", "权重股",
+    "机构重仓", "基金重仓", "社保重仓", "QFII", "证金持股", "保险重仓", "信托重仓",
+    "茅指数", "宁组合", "超级品牌", "东方财富热股", "行业龙头", "昨日", "次新股",
+    "AB股", "AH股", "B股", "GDR", "破净股", "风格", "样本股", "成份", "标的",
+    "创业板综", "深证100",
+];
+
+/// 解析东财 F10 所属板块（2026-06-12 实测）：
+/// result.data[] = {"BOARD_NAME":"白酒","BOARD_CODE":"896","BOARD_TYPE":null|"行业"|"板块"}
+/// BOARD_TYPE：行业=东财行业分类，板块=地域板块，null=概念/题材/指数成分。
+/// 处理：黑名单去噪 → 细分行业Ⅱ/Ⅲ去重 → 行业排最前 → 同名去重 → 截前 10 个。
+pub fn parse_stock_boards(body: &str) -> Vec<StockBoard> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let arr = match v["result"]["data"].as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut industry: Vec<StockBoard> = vec![];
+    let mut concept: Vec<StockBoard> = vec![];
+    for d in arr {
+        let raw = match d["BOARD_NAME"].as_str() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        if BOARD_NOISE.iter().any(|w| raw.contains(w)) {
+            continue;
+        }
+        if raw.ends_with('Ⅱ') || raw.ends_with('Ⅲ') {
+            continue; // 细分行业（白酒Ⅱ/Ⅲ）与一级重复
+        }
+        let name = raw.trim_end_matches('_').to_string();
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let kind = d["BOARD_TYPE"].as_str().unwrap_or("");
+        let b = StockBoard {
+            name,
+            code: d["BOARD_CODE"].as_str().unwrap_or("").to_string(),
+            kind: if kind.is_empty() { "概念".into() } else { kind.to_string() },
+        };
+        if kind == "行业" {
+            industry.push(b);
+        } else {
+            concept.push(b);
+        }
+    }
+    industry.extend(concept);
+    industry.truncate(10);
+    industry
+}
+
+#[cfg(feature = "net")]
+pub async fn fetch_stock_boards(code: &str) -> Result<Vec<StockBoard>, String> {
+    let lc = code.to_lowercase();
+    let suffix = if lc.starts_with("sh") && lc.len() == 8 {
+        "SH"
+    } else if lc.starts_with("sz") && lc.len() == 8 {
+        "SZ"
+    } else {
+        return Err(format!("无法识别代码: {code}"));
+    };
+    let six = &lc[2..];
+    let url = format!(
+        "https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_F10_CORETHEME_BOARDTYPE\
+         &columns=SECUCODE,SECURITY_CODE,BOARD_NAME,BOARD_CODE,BOARD_TYPE\
+         &filter=(SECUCODE%3D%22{six}.{suffix}%22)&client=WEB&source=HSF10&pageSize=60"
+    );
+    let text = em_get_text(&url, "https://emweb.securities.eastmoney.com/")
+        .await
+        .map_err(|e| format!("所属板块请求失败: {e}"))?;
+    let list = parse_stock_boards(&text);
+    if list.is_empty() {
+        return Err("所属板块解析为空".into());
+    }
+    Ok(list)
+}
+
+// ------------------------------------------------------------
+// 北向资金（沪深港通）
+// ⚠️ 2024-08 交易所新规后北向"净买额"已停止披露：
+//   · push2 kamt / kamt.rtmin 实时接口北向字段恒为 0 / "-"（2026-06-12 复核）
+//   · RPT_MUTUAL_DEAL_HISTORY 的 NET_DEAL_AMT / FUND_INFLOW 为 null
+// 仍按日披露的只有"成交金额"（次日更新）→ 只返回成交额，绝不伪造净流入。
+// ------------------------------------------------------------
+#[derive(Debug, Clone, Serialize)]
+pub struct NorthDay {
+    pub date: String, // YYYY-MM-DD
+    pub hu: f64,      // 沪股通成交金额（亿元）
+    pub sz: f64,      // 深股通成交金额（亿元）
+}
+
+/// 解析沪深港通历史单边返回（2026-06-12 实测）：
+/// result.data[] = {"TRADE_DATE":"2026-06-11 00:00:00","DEAL_AMT":159596.74,…}
+/// DEAL_AMT 单位百万元（与 akshare 对该报表的口径一致）→ /100 转亿元；null 行剔除。
+pub fn parse_north_history(body: &str) -> Vec<(String, f64)> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let arr = match v["result"]["data"].as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+    arr.iter()
+        .filter_map(|d| {
+            let date = d["TRADE_DATE"].as_str()?.get(..10)?.to_string();
+            let amt = d["DEAL_AMT"].as_f64()?; // null（未披露/未更新）→ 剔除
+            Some((date, amt / 100.0))
+        })
+        .collect()
+}
+
+/// 拉沪深港通历史一边（001=沪股通 003=深股通），失败返回空（由调用方合并判空）
+#[cfg(feature = "net")]
+async fn fetch_mutual_history(mutual_type: &str) -> Vec<(String, f64)> {
+    let url = format!(
+        "https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=TRADE_DATE&sortTypes=-1\
+         &pageSize=5&pageNumber=1&reportName=RPT_MUTUAL_DEAL_HISTORY&columns=ALL&source=WEB&client=WEB\
+         &filter=(MUTUAL_TYPE%3D%22{mutual_type}%22)"
+    );
+    match em_get_text(&url, "https://data.eastmoney.com/").await {
+        Ok(t) => parse_north_history(&t),
+        Err(_) => vec![],
+    }
+}
+
+/// 北向（沪+深股通）近 5 个交易日成交金额（亿元），最新交易日在前
+#[cfg(feature = "net")]
+pub async fn fetch_north_flow() -> Result<Vec<NorthDay>, String> {
+    let (hu, sz) = tokio::join!(fetch_mutual_history("001"), fetch_mutual_history("003"));
+    let mut map: std::collections::BTreeMap<String, NorthDay> = Default::default();
+    for (date, amt) in hu {
+        map.entry(date.clone())
+            .or_insert_with(|| NorthDay { date: date.clone(), hu: 0.0, sz: 0.0 })
+            .hu = amt;
+    }
+    for (date, amt) in sz {
+        map.entry(date.clone())
+            .or_insert_with(|| NorthDay { date: date.clone(), hu: 0.0, sz: 0.0 })
+            .sz = amt;
+    }
+    let mut out: Vec<NorthDay> = map.into_values().collect();
+    out.sort_by(|a, b| b.date.cmp(&a.date)); // 最新在前
+    out.truncate(5);
+    if out.is_empty() {
+        return Err("沪深港通历史成交为空".into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod dim_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_flow_days() {
+        // 2026-06-12 实测真实形状（贵州茅台，截取 2 行）
+        let raw = r#"{"rc":0,"data":{"code":"600519","market":1,"name":"贵州茅台","klines":[
+            "2026-06-10,268756032.0,-468265.0,-268287760.0,-55750576.0,324506608.0,5.38,-0.01,-5.37,-1.12,6.50,1275.88,1.58,0.00,0.00",
+            "2026-06-11,-95013600.0,-81509.0,95095120.0,-80124064.0,-14889536.0,-2.94,-0.00,2.94,-2.48,-0.46,1279.00,0.24,0.00,0.00"]}}"#;
+        let l = parse_flow_days(raw);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[1].date, "2026-06-11");
+        assert!((l[1].main - (-95013600.0)).abs() < 1.0);
+        assert!((l[1].main_pct - (-2.94)).abs() < 0.01);
+        assert!((l[1].close - 1279.0).abs() < 0.01);
+        assert!((l[1].change_pct - 0.24).abs() < 0.01);
+        assert!(parse_flow_days("x").is_empty());
+        assert!(parse_flow_days(r#"{"data":{"klines":[]}}"#).is_empty());
+    }
+
+    #[test]
+    fn test_parse_stock_boards() {
+        // 2026-06-12 实测真实形状（600519 截取）：行业最前；指数成分/两融/细分Ⅲ滤掉
+        let raw = r#"{"result":{"data":[
+            {"BOARD_NAME":"茅指数","BOARD_CODE":"999","BOARD_TYPE":null},
+            {"BOARD_NAME":"白酒","BOARD_CODE":"896","BOARD_TYPE":null},
+            {"BOARD_NAME":"标准普尔","BOARD_CODE":"879","BOARD_TYPE":null},
+            {"BOARD_NAME":"食品饮料","BOARD_CODE":"438","BOARD_TYPE":"行业"},
+            {"BOARD_NAME":"白酒Ⅲ","BOARD_CODE":"1575","BOARD_TYPE":"行业"},
+            {"BOARD_NAME":"贵州板块","BOARD_CODE":"173","BOARD_TYPE":"板块"},
+            {"BOARD_NAME":"融资融券","BOARD_CODE":"596","BOARD_TYPE":null}
+        ]},"success":true}"#;
+        let b = parse_stock_boards(raw);
+        let names: Vec<&str> = b.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["食品饮料", "白酒", "贵州板块"]);
+        assert_eq!(b[0].kind, "行业");
+        assert_eq!(b[1].kind, "概念");
+        assert_eq!(b[2].kind, "板块");
+        assert!(parse_stock_boards("x").is_empty());
+    }
+
+    #[test]
+    fn test_parse_north_history() {
+        // 2026-06-12 实测真实形状（沪股通截取；净买额字段已是 null）
+        let raw = r#"{"result":{"data":[
+            {"MUTUAL_TYPE":"001","TRADE_DATE":"2026-06-11 00:00:00","NET_DEAL_AMT":null,"FUND_INFLOW":null,"DEAL_AMT":159596.74},
+            {"MUTUAL_TYPE":"001","TRADE_DATE":"2026-06-10 00:00:00","NET_DEAL_AMT":null,"FUND_INFLOW":null,"DEAL_AMT":166385.91},
+            {"MUTUAL_TYPE":"001","TRADE_DATE":"2026-06-09 00:00:00","NET_DEAL_AMT":null,"FUND_INFLOW":null,"DEAL_AMT":null}
+        ]},"success":true}"#;
+        let l = parse_north_history(raw);
+        assert_eq!(l.len(), 2); // DEAL_AMT null 行剔除
+        assert_eq!(l[0].0, "2026-06-11");
+        assert!((l[0].1 - 1595.9674).abs() < 0.01); // 百万元 → 亿元
+        assert!(parse_north_history("x").is_empty());
+    }
+}

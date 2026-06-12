@@ -26,3 +26,9 @@ Copyright (c) Im-Midi
 
 5. mpquant/Ashare（MIT，思路参考）— 腾讯行情接口与"多源降级"设计
    K线第三备源（腾讯 web.ifzq.gtimg.cn）的接口与解析参考其实现，见 rust-stock/src-tauri/src/kline.rs。
+
+6. 1nchaos/adata (Apache License 2.0) — A 股数据接口字典
+   个股所属概念/板块、历史资金流（日）、沪深港通等东财接口的选型与字段
+   含义参考其接口整理（仅作接口字典使用，未复制其代码），见
+   rust-stock/src-tauri/src/extra.rs 相应注释。
+   https://github.com/1nchaos/adata
