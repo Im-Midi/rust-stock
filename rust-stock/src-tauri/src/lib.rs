@@ -135,6 +135,24 @@ async fn fetch_share_info(code: String) -> Result<extra::ShareInfo, String> {
     extra::fetch_share_info(&code).await
 }
 
+/// 核心财务指标（东财 F10 主要指标，最新报告期一行：营收/净利+同比、EPS、ROE、毛利率、负债率）
+#[tauri::command]
+async fn fetch_financials(code: String) -> Result<extra::Financials, String> {
+    extra::fetch_financials(&code).await
+}
+
+/// 融资融券个股余额（最近 2 个交易日，最新在前）。Ok(空数组)=非两融标的
+#[tauri::command]
+async fn fetch_margin(code: String) -> Result<Vec<extra::MarginDay>, String> {
+    extra::fetch_margin(&code).await
+}
+
+/// 个股龙虎榜上榜明细（最近 5 次，最新在前）。Ok(空数组)=从未上榜
+#[tauri::command]
+async fn fetch_lhb_detail(code: String) -> Result<Vec<extra::LhbItem>, String> {
+    extra::fetch_lhb_detail(&code).await
+}
+
 /// 自选股相关快讯（行情页"自选股信息"卡片）
 #[tauri::command]
 async fn fetch_stock_news(codes: Vec<String>) -> Result<Vec<feed::NewsItem>, String> {
@@ -796,6 +814,9 @@ pub fn run() {
             fetch_hot_stocks,
             fetch_dividends,
             fetch_share_info,
+            fetch_financials,
+            fetch_margin,
+            fetch_lhb_detail,
             fetch_sentiment,
             fetch_kline,
             ai_recommend,

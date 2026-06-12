@@ -1,6 +1,6 @@
 // pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
-import { fetchQuotes, fetchFundFlow, fetchFlowHistory, fetchStockBoards, fetchDividends, fetchShareInfo, analyzeStock } from '../api.js';
+import { fetchQuotes, fetchFundFlow, fetchFlowHistory, fetchStockBoards, fetchDividends, fetchShareInfo, fetchFinancials, fetchMargin, fetchLhbDetail, analyzeStock } from '../api.js';
 import { getKline } from '../klinecache.js';
 import { calcChips } from '../chip.js';
 import { indicatorSummary } from '../mytt.js';
@@ -11,8 +11,9 @@ import { aiReady, storeGet, storeSet, today } from '../store.js';
 import { inTauri, isMobile } from '../bridge.js';
 
 const cur = { code: null, name: '', period: 'day' };
-// 当前股的扩展维度（所属板块/概念 + 近5日主力净流入），loadDetail 填充、aiAnalyze 注入上下文
-const extras = { code: null, boards: null, flows: null, divi: null, share: null };
+// 当前股的扩展维度（板块/概念、近5日主力净流入、分红、股本、核心财务、两融、龙虎榜），
+// loadDetail 并行拉取填充、aiAnalyze 全部注入 AI 上下文
+const extras = { code: null, boards: null, flows: null, divi: null, share: null, fin: null, margin: null, lhb: null };
 let data = [];                      // 全量K线缓存（最多 250 根）
 let view = { start: 0, count: 90 }; // 当前可视窗口
 const FETCH_N = 250;
@@ -256,6 +257,27 @@ async function aiAnalyze() {
     const yld = d.yield_pct > 0.005 ? `，公告时点股息率 ${d.yield_pct.toFixed(2)}%` : '';
     parts.push(`最近分红: ${d.plan}（${when}${yld}）`);
   }
+  if (extras.code === cur.code && extras.fin && extras.fin.report) {
+    const f = extras.fin;
+    const seg = [];
+    if (f.revenue != null) seg.push(`营业收入 ${fmtFin(f.revenue)}${fmtYoy(f.revenue_yoy)}`);
+    if (f.net_profit != null) seg.push(`归母净利润 ${fmtFin(f.net_profit)}${fmtYoy(f.net_profit_yoy)}`);
+    if (f.eps != null) seg.push(`每股收益 ${f.eps.toFixed(2)}元`);
+    if (f.roe != null) seg.push(`ROE ${f.roe.toFixed(2)}%`);
+    if (f.gross_margin != null) seg.push(`毛利率 ${f.gross_margin.toFixed(1)}%`);
+    if (f.debt_ratio != null) seg.push(`资产负债率 ${f.debt_ratio.toFixed(1)}%`);
+    if (seg.length) parts.push(`核心财务指标(${f.report}): ${seg.join('，')}`);
+  }
+  if (extras.code === cur.code && extras.margin && extras.margin.length) {
+    const m = extras.margin[0];
+    const d = extras.margin.length > 1 ? `，融资余额较上日 ${fmtAmt(m.rzye - extras.margin[1].rzye)}` : '';
+    parts.push(`融资融券(${m.date}): 融资余额 ${fmtFin(m.rzye)}，融券余额 ${fmtFin(m.rqye)}，两融合计 ${fmtFin(m.rzrqye)}${d}`);
+  }
+  if (extras.code === cur.code && extras.lhb && extras.lhb.length) {
+    const d = extras.lhb[0];
+    const more = extras.lhb.length > 1 ? `，近30日共上榜 ${extras.lhb.length} 次` : '';
+    parts.push(`龙虎榜: ${d.date} 上榜（${d.reason}），席位净买额 ${fmtAmt(d.net)}（买入 ${fmtFin(d.buy)}/卖出 ${fmtFin(d.sell)}）${more}`);
+  }
   const context = '截至最新交易日，本股真实数据如下：\n' + parts.join('\n');
   aiBusy = true;
   flashHint('AI 解读中…（结合筹码/指标）');
@@ -371,17 +393,81 @@ async function loadShareInfo(code) {
   return valid ? cached.info : null;
 }
 
+// 财务金额（元）→ 万亿/亿/万（保留负号；净利可为负。null/非数 → "--"）
+function fmtFin(yuan) {
+  if (yuan == null || !Number.isFinite(yuan)) return '--';
+  const sign = yuan < 0 ? '-' : '';
+  const a = Math.abs(yuan);
+  if (a >= 1e12) return sign + (a / 1e12).toFixed(2) + '万亿';
+  if (a >= 1e8) return sign + (a / 1e8).toFixed(1) + '亿';
+  if (a >= 1e4) return sign + (a / 1e4).toFixed(0) + '万';
+  return sign + a.toFixed(0);
+}
+// 同比 % → "(+6.3%)"；未披露(null) → 空串（不造 0）
+function fmtYoy(v) {
+  return (v == null || !Number.isFinite(v)) ? '' : `(${v >= 0 ? '+' : ''}${v.toFixed(1)}%)`;
+}
+// 龙虎榜"近期"判定：上榜日距今 ≤30 天才展示/注入 AI（多年前的老黄历不提）
+function recentLhb(list) {
+  if (!Array.isArray(list) || !list.length) return [];
+  const cutoff = Date.now() - 30 * 86400000;
+  return list.filter(it => {
+    const t = new Date(it.date + 'T00:00:00').getTime();
+    return Number.isFinite(t) && t >= cutoff;
+  });
+}
+// 上榜原因瘦身：去掉"非ST、*ST和S证券"模板前缀，超长截断（小屏一行放不下全文）
+function shortReason(r) {
+  const s = (r || '').replace(/^非ST、\*ST和S证券/, '');
+  return s.length > 20 ? s.slice(0, 20) + '…' : s;
+}
+
+// 核心财务指标按日缓存（季报级数据；拉取失败 → 沿用旧缓存，没有就不显示，绝不造假）
+async function loadFinancials(code) {
+  const key = 'fin_' + code;
+  const cached = await storeGet(key, null);
+  const valid = cached && cached.fin && cached.fin.report;
+  if (valid && cached.date === today()) return cached.fin;
+  const fresh = await fetchFinancials(code);
+  if (fresh && fresh.report) { storeSet(key, { date: today(), fin: fresh }); return fresh; }
+  return valid ? cached.fin : null;
+}
+
+// 两融余额按日缓存（交易所按日披露；[] = 非两融标的，也按日缓存避免反复打接口）
+async function loadMargin(code) {
+  const key = 'margin_' + code;
+  const cached = await storeGet(key, null);
+  const valid = cached && Array.isArray(cached.list);
+  if (valid && cached.date === today()) return cached.list;
+  const fresh = await fetchMargin(code); // [] 合法（非两融标的），null 才是失败
+  if (fresh) { storeSet(key, { date: today(), list: fresh }); return fresh; }
+  return valid ? cached.list : null;
+}
+
+// 龙虎榜明细按日缓存（按日披露；[] = 从未上榜，也按日缓存）
+async function loadLhb(code) {
+  const key = 'lhbd_' + code;
+  const cached = await storeGet(key, null);
+  const valid = cached && Array.isArray(cached.list);
+  if (valid && cached.date === today()) return cached.list;
+  const fresh = await fetchLhbDetail(code); // [] 合法（从未上榜），null 才是失败
+  if (fresh) { storeSet(key, { date: today(), list: fresh }); return fresh; }
+  return valid ? cached.list : null;
+}
+
 async function loadDetail(code) {
   const el = document.getElementById('stockDetail');
   el.innerHTML = '';
   // 并行取行情快照 + 资金流（换手率随资金流接口一起来）+ 近5日主力净流入 + 所属板块
-  const [quotes, ff, flows, boards, divi, share] = await Promise.all([
+  const [quotes, ff, flows, boards, divi, share, fin, margin, lhbAll] = await Promise.all([
     fetchQuotes([code]), fetchFundFlow(code), fetchFlowHistory(code, 5), loadBoards(code),
     loadDividends(code), loadShareInfo(code),
+    loadFinancials(code), loadMargin(code), loadLhb(code),
   ]);
   if (code !== cur.code) return; // 等待期间已切到别的股票，丢弃过期渲染
   extras.code = code; extras.flows = flows; extras.boards = boards;
   extras.divi = divi; extras.share = share;
+  extras.fin = fin; extras.margin = margin; extras.lhb = recentLhb(lhbAll);
   const q = quotes && quotes[0];
   let html = '';
   // 所属板块/概念 chips（行业高亮）
@@ -421,6 +507,31 @@ async function loadDetail(code) {
     }
     html += '<div class="sd-grid">' + cells.map(c =>
       `<div class="sd-cell"><div class="k">${c[0]}</div><div class="v ${c[2]}">${c[1]}</div></div>`).join('') + '</div>';
+  }
+  // 核心财务指标一行（最新报告期；未披露字段省略；失败且无缓存 → 整行隐藏，绝不造假）
+  if (fin && fin.report) {
+    const seg = [];
+    if (fin.revenue != null) seg.push(`营收 ${fmtFin(fin.revenue)}${fmtYoy(fin.revenue_yoy)}`);
+    if (fin.net_profit != null) seg.push(`净利 ${fmtFin(fin.net_profit)}${fmtYoy(fin.net_profit_yoy)}`);
+    if (fin.eps != null) seg.push(`EPS ${fin.eps.toFixed(2)}`);
+    if (fin.roe != null) seg.push(`ROE ${fin.roe.toFixed(1)}%`);
+    if (fin.gross_margin != null) seg.push(`毛利 ${fin.gross_margin.toFixed(1)}%`);
+    if (fin.debt_ratio != null) seg.push(`负债 ${fin.debt_ratio.toFixed(1)}%`);
+    if (seg.length) html += `<div class="sd-divi">财报 <b>${fin.report}</b> · ${seg.join(' · ')}</div>`;
+  }
+  // 融资融券一行（最新交易日余额 + 融资余额较上日增减；非两融标的([])或失败无缓存 → 隐藏）
+  if (margin && margin.length) {
+    const m = margin[0];
+    const d = margin.length > 1 ? m.rzye - margin[1].rzye : null;
+    const delta = d == null ? '' : ` <span class="${d >= 0 ? 'up-c' : 'down-c'}">${fmtAmt(d)}</span>`;
+    html += `<div class="sd-divi">两融(${m.date.slice(5)}) 融资余额 <b>${fmtFin(m.rzye)}</b>${delta} · 融券 ${fmtFin(m.rqye)} · 合计 ${fmtFin(m.rzrqye)}</div>`;
+  }
+  // 龙虎榜一行（仅近 30 日上过榜才显示；从未上榜 / 久未上榜 → 整行不出现）
+  if (extras.lhb.length) {
+    const d = extras.lhb[0];
+    const cls = d.net >= 0 ? 'up-c' : 'down-c';
+    const more = extras.lhb.length > 1 ? ` · 近30日${extras.lhb.length}次` : '';
+    html += `<div class="sd-divi">龙虎榜 <b>${d.date.slice(5)}</b> 净买 <span class="${cls}">${fmtAmt(d.net)}</span> · ${shortReason(d.reason)}${more}</div>`;
   }
   // 最近分红（东财分红明细，按日缓存；从未分红或拉取失败都不显示该行）
   if (divi && divi.length) {

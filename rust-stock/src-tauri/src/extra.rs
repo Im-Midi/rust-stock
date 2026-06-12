@@ -1098,3 +1098,313 @@ mod dim5_tests {
         assert!(parse_share_info("x").is_none());
     }
 }
+
+
+// ============================================================
+// 第六批三个 A 股数据维度（接口设计参考 1nchaos/adata 接口字典，Apache-2.0，
+// 未复制其代码；全部接口 2026-06-12 经真实请求复核形状）：
+//   ① 核心财务指标（东财 F10 RPT_F10_FINANCE_MAINFINADATA，主要财务指标）
+//   ② 融资融券个股余额（东财 datacenter RPTA_WEB_RZRQ_GGMX；
+//      注意 adata 字典里的 RPT_RZRQ_LSHDETAIL 在 web datacenter 已不存在，
+//      实测返回"报表配置不存在"——个股两融明细的现行报表是 RPTA_WEB_RZRQ_GGMX）
+//   ③ 个股龙虎榜上榜明细（RPT_DAILYBILLBOARD_DETAILSNEW 按 SECURITY_CODE 过滤）
+// ============================================================
+
+/// null / "-" 安全取数：缺失返回 None（serde 序列化为 JSON null，
+/// 前端显示 "--" 或整段省略——绝不把"未披露"伪装成 0）
+fn optnum(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// 把统一代码 sh600519 / sz000001 拆成 (六位码, "SH"/"SZ")
+fn split_code(code: &str) -> Result<(String, &'static str), String> {
+    let lc = code.to_lowercase();
+    let suffix = if lc.starts_with("sh") && lc.len() == 8 {
+        "SH"
+    } else if lc.starts_with("sz") && lc.len() == 8 {
+        "SZ"
+    } else {
+        return Err(format!("无法识别代码: {code}"));
+    };
+    Ok((lc[2..].to_string(), suffix))
+}
+
+// ------------------------------------------------------------
+// ① 核心财务指标（最新报告期一行）
+// ------------------------------------------------------------
+#[derive(Debug, Clone, Serialize)]
+pub struct Financials {
+    pub report: String,              // 报告期名，如 "2026一季报"（REPORT_DATE_NAME）
+    pub report_date: String,         // 报告期 YYYY-MM-DD（REPORT_DATE）
+    pub revenue: Option<f64>,        // 营业总收入（元）TOTALOPERATEREVE
+    pub revenue_yoy: Option<f64>,    // 营收同比 %  TOTALOPERATEREVETZ
+    pub net_profit: Option<f64>,     // 归母净利润（元）PARENTNETPROFIT
+    pub net_profit_yoy: Option<f64>, // 净利同比 %  PARENTNETPROFITTZ
+    pub eps: Option<f64>,            // 基本每股收益（元）EPSJB
+    pub roe: Option<f64>,            // 加权净资产收益率 % ROEJQ
+    pub gross_margin: Option<f64>,   // 销售毛利率 % XSMLL（银行/券商为 null）
+    pub debt_ratio: Option<f64>,     // 资产负债率 % ZCFZL
+}
+
+/// 解析东财 F10 主要财务指标（2026-06-12 实测）：result.data[]（按 REPORT_DATE 倒序，
+/// 取第一行=最新报告期）。关键字段名见结构体注释；金额单位为元、比率已是百分数。
+/// None=响应无效或该股无任何财报数据（前端隐藏区块）。
+pub fn parse_financials(body: &str) -> Option<Financials> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    if v["success"] != serde_json::Value::Bool(true) {
+        return None;
+    }
+    let d = v["result"]["data"].as_array()?.first()?;
+    let report = d["REPORT_DATE_NAME"].as_str().unwrap_or("").to_string();
+    let report_date = d["REPORT_DATE"]
+        .as_str()
+        .and_then(|s| s.get(..10))
+        .unwrap_or("")
+        .to_string();
+    if report.is_empty() && report_date.is_empty() {
+        return None;
+    }
+    let f = Financials {
+        report,
+        report_date,
+        revenue: optnum(&d["TOTALOPERATEREVE"]),
+        revenue_yoy: optnum(&d["TOTALOPERATEREVETZ"]),
+        net_profit: optnum(&d["PARENTNETPROFIT"]),
+        net_profit_yoy: optnum(&d["PARENTNETPROFITTZ"]),
+        eps: optnum(&d["EPSJB"]),
+        roe: optnum(&d["ROEJQ"]),
+        gross_margin: optnum(&d["XSMLL"]),
+        debt_ratio: optnum(&d["ZCFZL"]),
+    };
+    if f.revenue.is_none() && f.net_profit.is_none() {
+        return None; // 关键数字全缺 → 视为无有效财报
+    }
+    Some(f)
+}
+
+#[cfg(feature = "net")]
+pub async fn fetch_financials(code: &str) -> Result<Financials, String> {
+    let (six, suffix) = split_code(code)?;
+    // 与 fetch_stock_boards 同一 F10 datacenter；columns=ALL 即实测复核过的完整形状
+    let url = format!(
+        "https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_F10_FINANCE_MAINFINADATA\
+         &columns=ALL&filter=(SECUCODE%3D%22{six}.{suffix}%22)&client=WEB&source=HSF10\
+         &pageSize=1&sortColumns=REPORT_DATE&sortTypes=-1"
+    );
+    let text = em_get_text(&url, "https://emweb.securities.eastmoney.com/")
+        .await
+        .map_err(|e| format!("财务指标请求失败: {e}"))?;
+    parse_financials(&text).ok_or_else(|| "财务指标解析为空".to_string())
+}
+
+// ------------------------------------------------------------
+// ② 融资融券个股余额（最近 2 个交易日，最新在前 → 可算较上日增减）
+// ------------------------------------------------------------
+#[derive(Debug, Clone, Serialize)]
+pub struct MarginDay {
+    pub date: String,   // 交易日 YYYY-MM-DD（DATE）
+    pub rzye: f64,      // 融资余额（元）RZYE
+    pub rqye: f64,      // 融券余额（元）RQYE
+    pub rzrqye: f64,    // 融资融券余额（元）RZRQYE
+    pub rzjme: f64,     // 当日融资净买额（元，买入-偿还）RZJME
+}
+
+/// 解析东财个股两融明细（2026-06-12 实测）：result.data[] 按 date 倒序。
+/// 返回 None=响应无效；Some(vec![])=非两融标的——datacenter 对查无数据
+/// 返回 {"success":false,"code":9201,"message":"返回数据为空"}（实测），
+/// 与真正的请求失败（网络/解析错误）严格区分。
+pub fn parse_margin_days(body: &str) -> Option<Vec<MarginDay>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    if v["success"] != serde_json::Value::Bool(true) {
+        // 9201 = 查询成功但无记录（非两融标的）；其余按无效响应处理
+        return if v["code"].as_i64() == Some(9201) { Some(vec![]) } else { None };
+    }
+    let arr = match v["result"]["data"].as_array() {
+        Some(a) => a,
+        None => return Some(vec![]),
+    };
+    Some(
+        arr.iter()
+            .filter_map(|d| {
+                let date = d["DATE"].as_str()?.get(..10)?.to_string();
+                Some(MarginDay {
+                    date,
+                    rzye: num(&d["RZYE"]),
+                    rqye: num(&d["RQYE"]),
+                    rzrqye: num(&d["RZRQYE"]),
+                    rzjme: num(&d["RZJME"]),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// 个股两融余额（最近 2 个交易日，最新在前）。Ok(空数组)=非两融标的（前端隐藏该行）
+#[cfg(feature = "net")]
+pub async fn fetch_margin(code: &str) -> Result<Vec<MarginDay>, String> {
+    let (six, _) = split_code(code)?;
+    let url = format!(
+        "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_GGMX\
+         &columns=ALL&filter=(scode%3D%22{six}%22)&pageNumber=1&pageSize=2\
+         &sortColumns=date&sortTypes=-1&source=WEB&client=WEB"
+    );
+    let text = em_get_text(&url, "https://data.eastmoney.com/")
+        .await
+        .map_err(|e| format!("两融请求失败: {e}"))?;
+    parse_margin_days(&text).ok_or_else(|| "两融响应无效".to_string())
+}
+
+// ------------------------------------------------------------
+// ③ 个股龙虎榜上榜明细（最近 5 次，最新在前；"是否最近上榜"由前端按日期判断）
+// ------------------------------------------------------------
+#[derive(Debug, Clone, Serialize)]
+pub struct LhbItem {
+    pub date: String,    // 上榜日 YYYY-MM-DD（TRADE_DATE）
+    pub reason: String,  // 上榜原因（EXPLANATION）
+    pub net: f64,        // 龙虎榜净买额（元）BILLBOARD_NET_AMT
+    pub buy: f64,        // 龙虎榜买入额（元）BILLBOARD_BUY_AMT
+    pub sell: f64,       // 龙虎榜卖出额（元）BILLBOARD_SELL_AMT
+}
+
+/// 解析个股龙虎榜明细（2026-06-12 实测；同日多原因上榜会有多行，全保留）。
+/// None=响应无效；Some(vec![])=从未上榜（datacenter 同样回 9201"返回数据为空"）。
+pub fn parse_lhb_detail(body: &str) -> Option<Vec<LhbItem>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    if v["success"] != serde_json::Value::Bool(true) {
+        return if v["code"].as_i64() == Some(9201) { Some(vec![]) } else { None };
+    }
+    let arr = match v["result"]["data"].as_array() {
+        Some(a) => a,
+        None => return Some(vec![]),
+    };
+    Some(
+        arr.iter()
+            .filter_map(|d| {
+                let date = d["TRADE_DATE"].as_str()?.get(..10)?.to_string();
+                Some(LhbItem {
+                    date,
+                    reason: d["EXPLANATION"].as_str().unwrap_or("").to_string(),
+                    net: num(&d["BILLBOARD_NET_AMT"]),
+                    buy: num(&d["BILLBOARD_BUY_AMT"]),
+                    sell: num(&d["BILLBOARD_SELL_AMT"]),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// 个股龙虎榜历史（最近 5 次，最新在前）。Ok(空数组)=从未上榜（前端隐藏该行）；
+/// 是否"近期"由前端按本机日期过滤（≤30 天才展示/注入 AI），后端不做日期运算。
+#[cfg(feature = "net")]
+pub async fn fetch_lhb_detail(code: &str) -> Result<Vec<LhbItem>, String> {
+    let (six, _) = split_code(code)?;
+    let url = format!(
+        "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW\
+         &columns=ALL&filter=(SECURITY_CODE%3D%22{six}%22)&pageNumber=1&pageSize=5\
+         &sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB"
+    );
+    let text = em_get_text(&url, "https://data.eastmoney.com/")
+        .await
+        .map_err(|e| format!("龙虎榜请求失败: {e}"))?;
+    parse_lhb_detail(&text).ok_or_else(|| "龙虎榜响应无效".to_string())
+}
+
+#[cfg(test)]
+mod dim6_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_financials() {
+        // 2026-06-12 实测真实形状（贵州茅台 2026 一季报，截取关键字段；EPSKCJB 为 null）
+        let raw = r#"{"result":{"data":[
+            {"SECUCODE":"600519.SH","REPORT_DATE":"2026-03-31 00:00:00","REPORT_DATE_NAME":"2026一季报",
+             "EPSJB":21.76,"EPSKCJB":null,"TOTALOPERATEREVE":54702912385.23,"TOTALOPERATEREVETZ":6.336009277123,
+             "PARENTNETPROFIT":27242512886.45,"PARENTNETPROFITTZ":1.471418294983,
+             "ROEJQ":10.57,"XSMLL":89.7592176242,"ZCFZL":12.1227489682}
+        ],"count":102},"success":true,"message":"ok","code":0}"#;
+        let f = parse_financials(raw).unwrap();
+        assert_eq!(f.report, "2026一季报");
+        assert_eq!(f.report_date, "2026-03-31");
+        assert!((f.revenue.unwrap() - 54702912385.23).abs() < 1.0);
+        assert!((f.revenue_yoy.unwrap() - 6.336009277123).abs() < 1e-6);
+        assert!((f.net_profit.unwrap() - 27242512886.45).abs() < 1.0);
+        assert!((f.net_profit_yoy.unwrap() - 1.471418294983).abs() < 1e-6);
+        assert!((f.eps.unwrap() - 21.76).abs() < 1e-6);
+        assert!((f.roe.unwrap() - 10.57).abs() < 1e-6);
+        assert!((f.gross_margin.unwrap() - 89.7592176242).abs() < 1e-6);
+        assert!((f.debt_ratio.unwrap() - 12.1227489682).abs() < 1e-6);
+        // 银行类：毛利率为 null → None（不造 0）
+        let bank = r#"{"result":{"data":[{"REPORT_DATE":"2026-03-31 00:00:00","REPORT_DATE_NAME":"2026一季报",
+            "TOTALOPERATEREVE":1.0,"XSMLL":null}]},"success":true}"#;
+        let b = parse_financials(bank).unwrap();
+        assert!(b.gross_margin.is_none());
+        assert!(b.net_profit.is_none());
+        // 关键数字全缺 / 响应无效 / 无数据 → None
+        assert!(parse_financials(r#"{"result":{"data":[{"REPORT_DATE_NAME":"2026一季报"}]},"success":true}"#).is_none());
+        assert!(parse_financials(r#"{"result":null,"success":false,"code":9201}"#).is_none());
+        assert!(parse_financials("x").is_none());
+    }
+
+    #[test]
+    fn test_parse_margin_days() {
+        // 2026-06-12 实测真实形状（贵州茅台，截取 2 日；RZRQYE 可带小数）
+        let raw = r#"{"result":{"pages":1305,"data":[
+            {"DATE":"2026-06-11 00:00:00","SCODE":"600519","RZYE":19190663674,"RQYL":133635,
+             "RZRQYE":19361582839,"RQYE":170919165,"RZJME":-68727865,"SPJ":1279,"ZDF":0.2445},
+            {"DATE":"2026-06-10 00:00:00","SCODE":"600519","RZYE":19259391539,"RQYL":140435,
+             "RZRQYE":19438569746.8,"RQYE":179178207.8,"RZJME":-158389565,"SPJ":1275.88,"ZDF":1.5828}
+        ],"count":3915},"success":true,"message":"ok","code":0}"#;
+        let l = parse_margin_days(raw).unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].date, "2026-06-11"); // 最新在前
+        assert!((l[0].rzye - 19190663674.0).abs() < 1.0);
+        assert!((l[0].rqye - 170919165.0).abs() < 1.0);
+        assert!((l[0].rzrqye - 19361582839.0).abs() < 1.0);
+        assert!((l[0].rzjme - (-68727865.0)).abs() < 1.0);
+        assert!((l[1].rzrqye - 19438569746.8).abs() < 0.01);
+        // 余额较上日变动（前端口径）：最新 - 上日 < 0（融资余额下降）
+        assert!(l[0].rzye - l[1].rzye < 0.0);
+        // 非两融标的：9201 → Some(空)（实测形状），与无效响应（None）区分
+        assert_eq!(parse_margin_days(r#"{"version":null,"result":null,"success":false,"message":"返回数据为空","code":9201}"#).unwrap().len(), 0);
+        assert!(parse_margin_days(r#"{"success":false,"code":9501,"message":"报表配置不存在"}"#).is_none());
+        assert!(parse_margin_days("x").is_none());
+    }
+
+    #[test]
+    fn test_parse_lhb_detail() {
+        // 2026-06-12 实测真实形状（永鼎股份 2026-06-04 上榜，截取关键字段）
+        let raw = r#"{"result":{"pages":24,"data":[
+            {"TRADE_DATE":"2026-06-04 00:00:00","SECURITY_CODE":"600105",
+             "EXPLANATION":"非ST、*ST和S证券连续三个交易日内收盘价格涨幅偏离值累计达到20%的证券",
+             "BILLBOARD_BUY_AMT":4240434963,"BILLBOARD_SELL_AMT":3173407855.4,
+             "BILLBOARD_NET_AMT":1067027107.6,"CLOSE_PRICE":54.29,"CHANGE_RATE":4.5647},
+            {"TRADE_DATE":"2026-04-10 00:00:00","SECURITY_CODE":"600105",
+             "EXPLANATION":"非ST、*ST和S证券连续三个交易日内收盘价格涨幅偏离值累计达到20%的证券",
+             "BILLBOARD_BUY_AMT":3130276977.62,"BILLBOARD_SELL_AMT":2473356675.91,
+             "BILLBOARD_NET_AMT":656920301.71,"CLOSE_PRICE":38.1,"CHANGE_RATE":9.9885}
+        ],"count":72},"success":true,"message":"ok","code":0}"#;
+        let l = parse_lhb_detail(raw).unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].date, "2026-06-04"); // 最新在前
+        assert!((l[0].net - 1067027107.6).abs() < 0.01);
+        assert!((l[0].buy - 4240434963.0).abs() < 1.0);
+        assert!((l[0].sell - 3173407855.4).abs() < 0.01);
+        assert!(l[0].reason.contains("涨幅偏离值"));
+        // 从未上榜：9201"返回数据为空" → Some(空)（诚实区分"没上过榜"与"取数失败"）
+        assert_eq!(parse_lhb_detail(r#"{"version":null,"result":null,"success":false,"message":"返回数据为空","code":9201}"#).unwrap().len(), 0);
+        assert!(parse_lhb_detail(r#"{"success":false,"code":500}"#).is_none());
+        assert!(parse_lhb_detail("x").is_none());
+    }
+
+    #[test]
+    fn test_split_code() {
+        assert_eq!(split_code("sh600519").unwrap(), ("600519".to_string(), "SH"));
+        assert_eq!(split_code("SZ000001").unwrap(), ("000001".to_string(), "SZ"));
+        assert!(split_code("bj430047").is_err());
+        assert!(split_code("600519").is_err());
+    }
+}

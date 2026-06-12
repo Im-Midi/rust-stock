@@ -116,6 +116,32 @@ export async function fetchShareInfo(code) {
   catch (e) { console.warn('股本市值失败:', e); return null; }
 }
 
+// 核心财务指标（最新报告期：营收/净利+同比、EPS、ROE、毛利率、负债率；
+// 未披露字段为 null（前端显示 "--"），整体失败 null → 隐藏区块）
+export async function fetchFinancials(code) {
+  if (!inTauri) return null;
+  try { return await invoke('fetch_financials', { code }); }
+  catch (e) { console.warn('财务指标失败:', e); return null; }
+}
+
+// 融资融券个股余额（最近 2 个交易日，最新在前）。[] = 非两融标的（合法）；null = 失败
+export async function fetchMargin(code) {
+  if (!inTauri) return null;
+  try {
+    const r = await invoke('fetch_margin', { code });
+    return Array.isArray(r) ? r : null;
+  } catch (e) { console.warn('两融获取失败:', e); return null; }
+}
+
+// 个股龙虎榜明细（最近 5 次上榜，最新在前）。[] = 从未上榜（合法）；null = 失败
+export async function fetchLhbDetail(code) {
+  if (!inTauri) return null;
+  try {
+    const r = await invoke('fetch_lhb_detail', { code });
+    return Array.isArray(r) ? r : null;
+  } catch (e) { console.warn('龙虎榜获取失败:', e); return null; }
+}
+
 export async function classifyNews(titles) {
   if (!inTauri) return null;
   try {
