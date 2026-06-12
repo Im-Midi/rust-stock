@@ -1133,6 +1133,35 @@ fn split_code(code: &str) -> Result<(String, &'static str), String> {
     Ok((lc[2..].to_string(), suffix))
 }
 
+/// Hinnant days_from_civil：公历 (y,m,d) → 距 1970-01-01 的天数（纯函数，免依赖 chrono）
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0,399]
+    let mp = ((m + 9) % 12) as i64; // 三月起算月序 [0,11]
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// "YYYY-MM-DD" → 距今天数（UTC 日界；±1 天误差对"近 30 日"判断无影响）。
+/// 解析失败返回 None。供后端按日期过滤龙虎榜等"仅近期才注入 AI"的数据。
+pub(crate) fn days_since(date: &str) -> Option<i64> {
+    let mut it = date.split('-');
+    let y: i64 = it.next()?.parse().ok()?;
+    let m: u32 = it.next()?.parse().ok()?;
+    let d: u32 = it.next()?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let now_days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64
+        / 86400;
+    Some(now_days - days_from_civil(y, m, d))
+}
+
 // ------------------------------------------------------------
 // ① 核心财务指标（最新报告期一行）
 // ------------------------------------------------------------
@@ -1316,6 +1345,18 @@ pub async fn fetch_lhb_detail(code: &str) -> Result<Vec<LhbItem>, String> {
 #[cfg(test)]
 mod dim6_tests {
     use super::*;
+
+    #[test]
+    fn test_days_from_civil() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        assert_eq!(days_from_civil(2000, 1, 1), 10957);
+        assert_eq!(days_from_civil(2026, 6, 12), 20616);
+        // days_since：今天≈0、明显过去为大正数、非法输入 None
+        assert!(days_since("1970-01-01").unwrap() > 20000);
+        assert!(days_since("废话").is_none());
+        assert!(days_since("2026-13-01").is_none());
+    }
 
     #[test]
     fn test_parse_financials() {

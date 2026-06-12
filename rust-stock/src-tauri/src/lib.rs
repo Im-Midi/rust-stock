@@ -378,6 +378,135 @@ pub struct RecStock {
     pub change_pct: f64, // 真实当日涨跌幅
 }
 
+/// 金额（元）→ 紧凑中文单位：≥1亿 → x.x亿；≥1万 → 取整万；其余取整元
+fn fmt_amt(v: f64) -> String {
+    let a = v.abs();
+    if a >= 1e8 {
+        format!("{:.1}亿", v / 1e8)
+    } else if a >= 1e4 {
+        format!("{:.0}万", v / 1e4)
+    } else {
+        format!("{:.0}元", v)
+    }
+}
+
+/// 同 fmt_amt，但正数显式带 +（资金流向类数字方向必须可见）
+fn fmt_amt_signed(v: f64) -> String {
+    if v >= 0.0 {
+        format!("+{}", fmt_amt(v))
+    } else {
+        fmt_amt(v)
+    }
+}
+
+/// 单股深调的数据注入层（与 K 线页「AI 解读」同一思路）：并发拉取该股
+/// 真实 财报/估值/概念板块/近5日主力资金/龙虎榜，拼成「【实时真实数据】」块。
+/// 任一接口失败只缺对应行，绝不拖垮整次深调；全部失败返回空串（提示词退回原样）。
+async fn realtime_stock_block(code: &str) -> String {
+    let (fin, share, boards, flows, lhb) = tokio::join!(
+        extra::fetch_financials(code),
+        extra::fetch_share_info(code),
+        extra::fetch_stock_boards(code),
+        extra::fetch_flow_history(code, 5),
+        extra::fetch_lhb_detail(code),
+    );
+    let mut lines: Vec<String> = Vec::new();
+    // 财报：最新报告期一行（未披露字段如实省略，绝不造 0）
+    if let Ok(f) = fin {
+        let mut p: Vec<String> = Vec::new();
+        if let Some(v) = f.revenue {
+            let yoy = f.revenue_yoy.map(|y| format!("(同比{y:+.1}%)")).unwrap_or_default();
+            p.push(format!("营收{}{yoy}", fmt_amt(v)));
+        }
+        if let Some(v) = f.net_profit {
+            let yoy = f.net_profit_yoy.map(|y| format!("(同比{y:+.1}%)")).unwrap_or_default();
+            p.push(format!("归母净利{}{yoy}", fmt_amt(v)));
+        }
+        if let Some(v) = f.eps {
+            p.push(format!("EPS {v:.2}元"));
+        }
+        if let Some(v) = f.roe {
+            p.push(format!("ROE {v:.1}%"));
+        }
+        if let Some(v) = f.gross_margin {
+            p.push(format!("毛利率{v:.1}%"));
+        }
+        if let Some(v) = f.debt_ratio {
+            p.push(format!("负债率{v:.1}%"));
+        }
+        if !p.is_empty() {
+            let period = if f.report.is_empty() { f.report_date.clone() } else { f.report.clone() };
+            lines.push(format!("财报({period}): {}", p.join("·")));
+        }
+    }
+    // 估值：总市值 / PE(动) / PB（fetch_share_info 缺省值为 0 → 省略该项）
+    if let Ok(si) = share {
+        let mut p: Vec<String> = Vec::new();
+        if si.total_cap > 0.0 {
+            p.push(format!("总市值{}", fmt_amt(si.total_cap)));
+        }
+        if si.float_cap > 0.0 && si.total_cap > 0.0 && (si.total_cap - si.float_cap) / si.total_cap > 0.01 {
+            p.push(format!("流通市值{}", fmt_amt(si.float_cap)));
+        }
+        if si.pe > 0.0 {
+            p.push(format!("PE(动){:.1}", si.pe));
+        } else if si.pe < 0.0 {
+            p.push("PE(动)为负(亏损)".to_string());
+        }
+        if si.pb > 0.0 {
+            p.push(format!("PB {:.2}", si.pb));
+        }
+        if !p.is_empty() {
+            lines.push(format!("估值: {}", p.join("·")));
+        }
+    }
+    // 概念/板块（行业排最前，extra 已滤指数成分类噪音）
+    if let Ok(bs) = boards {
+        if !bs.is_empty() {
+            let names: Vec<String> = bs
+                .iter()
+                .take(8)
+                .map(|b| if b.kind == "行业" { format!("{}(行业)", b.name) } else { b.name.clone() })
+                .collect();
+            lines.push(format!("概念/板块: {}", names.join("、")));
+        }
+    }
+    // 近 5 日主力净流入（升序旧→新，逐日 + 合计）
+    if let Ok(fl) = flows {
+        if !fl.is_empty() {
+            let total: f64 = fl.iter().map(|d| d.main).sum();
+            let days: Vec<String> = fl
+                .iter()
+                .map(|d| format!("{} {}", d.date.get(5..).unwrap_or(d.date.as_str()), fmt_amt_signed(d.main)))
+                .collect();
+            lines.push(format!("近{}日主力净流入: {}，合计{}", fl.len(), days.join("、"), fmt_amt_signed(total)));
+        }
+    }
+    // 龙虎榜：仅近 30 日上过榜才注入（与 K 线页同口径），最多 2 条
+    if let Ok(items) = lhb {
+        let recent: Vec<String> = items
+            .iter()
+            .filter(|it| extra::days_since(&it.date).map_or(false, |d| (0..=30).contains(&d)))
+            .take(2)
+            .map(|it| {
+                let reason: String = it.reason.chars().take(28).collect();
+                format!("{} 净买{}（{reason}）", it.date, fmt_amt_signed(it.net))
+            })
+            .collect();
+        if !recent.is_empty() {
+            lines.push(format!("龙虎榜(近30日): {}", recent.join("；")));
+        }
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n【实时真实数据】（以下为已替你查到的该股真实数据，可直接引用）\n{}\n",
+            lines.join("\n")
+        )
+    }
+}
+
 /// 单股产业链深度调研（复用「研」的方法论 RESEARCH_SYSTEM）。
 /// 失败返回空串——单股深调失败只是该股缺「深度调研」段，不拖垮整次推荐。
 async fn deep_research_stock(
@@ -393,7 +522,15 @@ async fn deep_research_stock(
     } else {
         "（暂无实时行情，禁止编造价格/涨跌幅）".to_string()
     };
-    let user = format!("请对A股「{name}」（代码 {code}）做单股产业链深度调研。{real}\n套用你的产业链调研方法，分节输出、每节用「」标出，中文 400~600 字：\n「产业链位置」在哪条产业链的哪一层，上游供给什么、下游卖给谁；\n「卡点与稀缺性」控制/供应稀缺环节还是仅受益主题，稀缺来自认证周期/扩产难度/工艺壁垒哪项；\n「多流派多空」价值/成长/游资/技术/宏观 各一句给倾向；\n「催化与验证」未来1~4个季度看哪些财报/公告/订单信号确认或推翻；\n「主要风险」与「证伪条件」各一节；\n「研究优先级」给 0~100 倾向分并说明加减分。\n除给定的现价与涨跌幅外禁止编造其他具体数字。直接输出正文，不要 markdown 代码块。");
+    // 数据注入层：真实基本面/资金数据作为"已替模型查好的资料"进 user 消息，
+    // 方法论/分节模板原样不动；全部取数失败时提示词与旧版完全一致。
+    let data_block = realtime_stock_block(code).await;
+    let guard = if data_block.is_empty() {
+        "除给定的现价与涨跌幅外禁止编造其他具体数字。"
+    } else {
+        "涉及具体数字以上文【实时真实数据】与给定行情为准；上文未提供的数据一律不得编造，确需提及时注明「未获取到」。"
+    };
+    let user = format!("请对A股「{name}」（代码 {code}）做单股产业链深度调研。{real}\n{data_block}套用你的产业链调研方法，分节输出、每节用「」标出，中文 400~600 字：\n「产业链位置」在哪条产业链的哪一层，上游供给什么、下游卖给谁；\n「卡点与稀缺性」控制/供应稀缺环节还是仅受益主题，稀缺来自认证周期/扩产难度/工艺壁垒哪项；\n「多流派多空」价值/成长/游资/技术/宏观 各一句给倾向；\n「催化与验证」未来1~4个季度看哪些财报/公告/订单信号确认或推翻；\n「主要风险」与「证伪条件」各一节；\n「研究优先级」给 0~100 倾向分并说明加减分。\n{guard}直接输出正文，不要 markdown 代码块。");
     let messages = vec![
         serde_json::json!({ "role": "system", "content": RESEARCH_SYSTEM }),
         serde_json::json!({ "role": "user", "content": user }),
