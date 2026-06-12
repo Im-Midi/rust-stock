@@ -1,6 +1,7 @@
 // pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
-import { fetchKline, fetchQuotes, fetchFundFlow, analyzeStock } from '../api.js';
+import { fetchQuotes, fetchFundFlow, analyzeStock } from '../api.js';
+import { getKline } from '../klinecache.js';
 import { calcChips } from '../chip.js';
 import { indicatorSummary } from '../mytt.js';
 import { switchPage } from '../router.js';
@@ -148,13 +149,22 @@ function resetView() {
   view.start = data.length - view.count;
 }
 
+let loadSeq = 0; // 防过期响应：快速切股/切周期时，旧请求回来不覆盖新图
 async function load() {
+  const seq = ++loadSeq;
   document.getElementById('klineMeta').textContent = '加载中…';
-  let candles = await fetchKline(cur.code, cur.period, FETCH_N);
+  let candles = null, stale = false, staleTs = 0;
+  if (inTauri) {
+    // 共享K线缓存：TTL 命中 0 请求；拉取失败但有上次成功数据 → last-good（stale）
+    const res = await getKline(cur.code, cur.period, FETCH_N);
+    if (seq !== loadSeq) return; // 已经切到别的股票/周期，丢弃过期结果
+    if (res && res.candles.length) { candles = res.candles; stale = res.stale; staleTs = res.ts; }
+  }
   let mocked = false;
   if (!candles) {
     if (inTauri) {
-      // 真机：K线拉取失败，绝不用模拟数据冒充（否则会把如 2.59 显示成假的 200 多，并误导筹码/指标）
+      // 真机：K线拉取失败且无任何历史缓存，绝不用模拟数据冒充
+      //（否则会把如 2.59 显示成假的 200 多，并误导筹码/指标）
       data = [];
       const cv = document.getElementById('klineCanvas');
       if (cv) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
@@ -171,8 +181,14 @@ async function load() {
   resetView();
   draw();
   const gesture = isMobile ? '双指缩放 / 单指平移' : '滚轮缩放 / 拖动平移';
+  let srcNote = mocked ? ' · 预览模拟数据' : '';
+  if (stale) {
+    const t = new Date(staleTs);
+    const hm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    srcNote = ` · ⚠ 网络波动，显示 ${hm} 缓存数据（切周期可重试）`;
+  }
   document.getElementById('klineMeta').textContent =
-    `${cur.code.toUpperCase()} · 共 ${data.length} 根 · 前复权 · ${gesture}` + (mocked ? ' · 预览模拟数据' : ' · 东方财富');
+    `${cur.code.toUpperCase()} · 共 ${data.length} 根 · 前复权 · ${gesture}` + srcNote;
   drawChip();
   drawIndicators();
 }

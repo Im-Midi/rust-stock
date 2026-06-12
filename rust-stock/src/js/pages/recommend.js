@@ -1,6 +1,7 @@
 // pages/recommend.js — 今日 AI 推荐：详尽分析后推荐 3 支
 // 历史按日存 SQLite（rec_history），连续 ≥7 个推荐日出现同一支 → ★ 标识并注明天数
-import { aiRecommend, fetchKline, fetchQuotes } from '../api.js';
+import { aiRecommend, fetchQuotes } from '../api.js';
+import { getKline, mapLimit } from '../klinecache.js';
 import { state, saveRecHistory, saveWatch, today, aiReady } from '../store.js';
 import { flashHint } from '../ui.js';
 import { inTauri } from '../bridge.js';
@@ -183,20 +184,41 @@ function drawSparks(recs) {
     if (candles) drawSpark(cv, candles);
   }
 }
-// 拉齐所有推荐的近30日日K（无论是否显示，用于近6日下行复筛），完成后复渲染
+// 拉齐所有推荐的近30日日K（无论是否显示，用于近6日下行复筛）。
+// 走共享K线缓存(klinecache)：有界并发 3 支（此前是串行 for-await，手机上一支卡住
+// 整队排队几分钟）；每支到货立即画该支缩略图（渐进渲染，不等全队列）；
+// 失败的股票 30s 冷却后自动重试（最多 4 轮），不再"一次失败永远空白"。
 let sparkLoading = false;
-async function ensureSparkData(recs) {
+const sparkFailAt = {}; // code -> 上次失败时间戳（30s 冷却）
+let sparkRetryLeft = 4; // 自动重试轮数上限（每次手动/路由触发会重置）
+async function ensureSparkData(recs, isRetry) {
   if (sparkLoading) return;
-  const todo = recs.filter(r => !sparkCache[r.code]);
+  if (!isRetry) sparkRetryLeft = 4;
+  const now = Date.now();
+  const todo = recs.filter(r => !sparkCache[r.code] && now - (sparkFailAt[r.code] || 0) > 30000);
   if (!todo.length) return;
   sparkLoading = true;
   try {
-    for (const r of todo) {
-      const k = await fetchKline(r.code, 'day', 30);
-      if (k && k.length) sparkCache[r.code] = k;
-    }
+    await mapLimit(todo, 3, async (r) => {
+      const res = await getKline(r.code, 'day', 30);
+      if (res && res.candles.length) {
+        sparkCache[r.code] = res.candles;
+        delete sparkFailAt[r.code];
+        // 渐进渲染：到一支画一支（data-spark 用完整 recs 索引，与 DOM 对齐）
+        const i = recs.indexOf(r);
+        const cv = document.querySelector(`canvas.rec-spark[data-spark="${i}"]`);
+        if (cv) drawSpark(cv, res.candles);
+      } else {
+        sparkFailAt[r.code] = Date.now();
+      }
+    });
   } finally { sparkLoading = false; }
-  renderRecommend(true); // 缓存齐 → 复筛 + 画线
+  renderRecommend(true); // 缓存齐 → 复筛(6连阴剔除) + 重画
+  // 还有失败的 → 冷却后安静地再试一轮（上限 4 轮，防无网时无限轮询）
+  if (sparkRetryLeft > 0 && recs.some(r => !sparkCache[r.code])) {
+    sparkRetryLeft--;
+    setTimeout(() => { ensureSparkData(recs, true); }, 31000);
+  }
 }
 // 近 30 日「收盘价折线」（真实日K的收盘价连线，红涨绿跌）。点击进完整日K。
 function drawSpark(cv, candles) {
@@ -247,7 +269,9 @@ async function computePerf() {
   if (!rows.length) return { rows: [], winRate: 0, avg: 0 };
   const codes = [...new Set(rows.map(r => r.code))];
   const klines = {};
-  await Promise.all(codes.map(async c => { klines[c] = await fetchKline(c, 'day', 60); }));
+  // 共享K线缓存 + 有界并发 4（此前无界 Promise.all，几十支同时打接口易触发掐线）
+  const ks = await mapLimit(codes, 4, c => getKline(c, 'day', 60));
+  codes.forEach((c, i) => { klines[c] = ks[i] && ks[i].candles; });
   const out = [];
   for (const r of rows) {
     const k = klines[r.code];

@@ -123,22 +123,43 @@ pub async fn fetch_kline(code: &str, klt: u32, lmt: u32) -> Result<Vec<Candle>, 
          &fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f61\
          &klt={klt}&fqt=1&end=20500101&lmt={lmt}"
     );
-    // 1) 东方财富（最全：带成交额/换手率，筹码精度最高）。免 gzip + 3 次重试化解安卓 rustls close_notify
-    if let Ok(text) = crate::extra::em_get_text(&url, "https://quote.eastmoney.com/").await {
-        let c = parse_kline(&text);
-        if !c.is_empty() {
-            return Ok(c);
+    // 竞速取数（替代旧的"东财跑完整条重试链才轮到备源"串行链）：
+    //   · 东财任务：最全（带成交额/换手率 → 筹码精度最高），免 gzip + 3 次重试
+    //   · 备援任务：延迟 2 秒起跑，腾讯（前复权日/周/月）→ 新浪（日K）
+    // 东财健康时 2 秒内就回，赢得竞速、筹码数据最全；东财被掐（安卓 rustls
+    // close_notify/重置/超时，单链最坏 30 秒+）时备援很快顶上，K线/筹码秒级出图。
+    let em = async {
+        match crate::extra::em_get_text(&url, "https://quote.eastmoney.com/").await {
+            Ok(text) => parse_kline(&text),
+            Err(_) => vec![],
         }
-    }
-    // 2) 腾讯（前复权日/周/月，价格真实；无换手率/成交额）
-    let t = fetch_kline_tencent(code, klt, lmt).await;
-    if !t.is_empty() {
-        return Ok(t);
-    }
-    // 3) 新浪（日K兜底）
-    let s = fetch_kline_sina(code, klt, lmt).await;
-    if !s.is_empty() {
-        return Ok(s);
+    };
+    let backup = async {
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        let t = fetch_kline_tencent(code, klt, lmt).await;
+        if !t.is_empty() {
+            return t;
+        }
+        fetch_kline_sina(code, klt, lmt).await
+    };
+    tokio::pin!(em);
+    tokio::pin!(backup);
+    let (mut em_done, mut backup_done) = (false, false);
+    while !(em_done && backup_done) {
+        tokio::select! {
+            c = &mut em, if !em_done => {
+                em_done = true;
+                if !c.is_empty() {
+                    return Ok(c);
+                }
+            }
+            c = &mut backup, if !backup_done => {
+                backup_done = true;
+                if !c.is_empty() {
+                    return Ok(c);
+                }
+            }
+        }
     }
     Err("K线获取失败（东财/腾讯/新浪三源均未取到，请稍后重试）".into())
 }

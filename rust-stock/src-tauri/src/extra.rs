@@ -176,15 +176,37 @@ pub async fn fetch_fund_flow(code: &str) -> Result<FundFlow, String> {
         "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids={secid}\
          &fields=f8,f12,f14,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87"
     );
-    // 1) 东方财富（5 档资金流 + 换手率，最全）
-    if let Ok(text) = em_get_text(&url, "https://quote.eastmoney.com/").await {
-        if let Some(ff) = parse_fund_flow(&text) {
-            return Ok(ff);
+    // 竞速取数：东财（5 档资金流 + 换手率，最全）对阵延迟 2 秒起跑的腾讯兜底
+    //（只有换手率，5 档置 0）。东财健康时 2 秒内回包赢得竞速；东财被掐时
+    // 腾讯很快顶上，K线详情页不再等满东财整条重试链（最坏 30 秒+）。
+    let em = async {
+        match em_get_text(&url, "https://quote.eastmoney.com/").await {
+            Ok(text) => parse_fund_flow(&text),
+            Err(_) => None,
         }
-    }
-    // 2) 腾讯兜底：只取换手率（5 档资金流腾讯不提供，置 0；至少换手率能显示）
-    if let Some(ff) = fetch_turnover_tencent(code).await {
-        return Ok(ff);
+    };
+    let backup = async {
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        fetch_turnover_tencent(code).await
+    };
+    tokio::pin!(em);
+    tokio::pin!(backup);
+    let (mut em_done, mut backup_done) = (false, false);
+    while !(em_done && backup_done) {
+        tokio::select! {
+            r = &mut em, if !em_done => {
+                em_done = true;
+                if let Some(ff) = r {
+                    return Ok(ff);
+                }
+            }
+            r = &mut backup, if !backup_done => {
+                backup_done = true;
+                if let Some(ff) = r {
+                    return Ok(ff);
+                }
+            }
+        }
     }
     Err("资金流/换手率获取失败（东财与腾讯均未取到）".into())
 }
