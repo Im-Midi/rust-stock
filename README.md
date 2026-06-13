@@ -17,6 +17,10 @@
   <img src="https://img.shields.io/badge/AI-DeepSeek%20%7C%20OpenAI--compatible-7C3AED.svg" alt="AI"/>
 </p>
 
+<p align="center">
+  <b>简体中文</b> · <a href="README.en.md">English</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+</p>
+
 ---
 
 ## ⚡ 它是什么

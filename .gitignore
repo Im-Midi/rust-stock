@@ -7,3 +7,12 @@ rust-stock/src-tauri/gen/
 # 本地数据库 / 运行时产物
 *.db
 *.db-
+
+# 本地工作笔记，绝不入库
+MEMORY.md
+PITFALLS.md
+
+# VIP 代码：绝不入库/不推 GitHub
+vip-app/
+vip-server/
+build5.txt
