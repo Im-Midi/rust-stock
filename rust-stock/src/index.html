@@ -667,6 +667,11 @@
     margin-top: 8px;
   }
   .kline-info b { font-weight: 500; }
+  /* AI 预测结果框（紫色主题，含醒目免责声明） */
+  .kline-predict { margin-top: 10px; border: 1px solid rgba(155,92,255,.45); border-radius: 9px; background: rgba(155,92,255,.07); padding: 9px 11px; }
+  .kline-predict .kp-disc { font-size: 11px; line-height: 1.5; color: #ffb454; background: rgba(255,77,79,.10); border: 1px solid rgba(255,180,84,.5); border-radius: 7px; padding: 6px 8px; margin-bottom: 7px; font-weight: 600; }
+  .kline-predict .kp-row { font-size: 11.5px; color: var(--txt-2); line-height: 1.6; font-family: 'DM Mono', monospace; }
+  .kline-predict .kp-row b { color: var(--txt); font-weight: 600; }
   /* 个股详情：行情快照 + 资金流 */
   #stockDetail { margin-top: 10px; }
   .sd-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
@@ -1003,11 +1008,12 @@
             <button class="kp-btn active" data-p="day">日K</button>
             <button class="kp-btn" data-p="week">周K</button>
             <button class="kp-btn" data-p="month">月K</button>
-            <button class="ai-read-btn" id="klineAi" title="结合筹码/指标/行情让 AI 解读本股">AI 解读</button>
+            <button class="ai-read-btn" id="klineAi" title="把全部已知真实数据喂给 AI，推演下一交易日 K 线（仅供参考，非投资建议）">AI 预测</button>
           </div>
           <canvas id="klineCanvas" width="672" height="460"></canvas>
           <div class="kline-info" id="klineInfo"></div>
           <div class="kline-indi" id="klineIndi"></div>
+          <div class="kline-predict" id="klinePredict" style="display:none"></div>
           <div id="stockDetail"></div>
           <div class="chip-panel" id="chipPanel" style="display:none">
             <div class="chip-head">筹码分布<span class="chip-stat" id="chipStat"></span></div>

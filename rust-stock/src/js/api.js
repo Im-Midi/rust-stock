@@ -176,3 +176,5 @@ export const askAi = (question, history, mode) =>
   invoke('ask_ai', { ...aiArgs(), question, history, mode: mode || null });
 export const aiRecommend = (context) =>
   invoke('ai_recommend', { ...aiArgs(), context });
+export const predictKline = (name, code, context) =>
+  invoke('predict_kline', { ...aiArgs(), name, code, context: context || '' });

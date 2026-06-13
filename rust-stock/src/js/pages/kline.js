@@ -1,6 +1,6 @@
 // pages/kline.js — K线图（canvas 蜡烛图 + MA5/MA10 + 成交量）
 // 交互：滚轮缩放（光标锚定）、按住拖动平移、日/周/月切换。自选股点名称进入。
-import { fetchQuotes, fetchFundFlow, fetchFlowHistory, fetchStockBoards, fetchDividends, fetchShareInfo, fetchFinancials, fetchMargin, fetchLhbDetail, analyzeStock } from '../api.js';
+import { fetchQuotes, fetchFundFlow, fetchFlowHistory, fetchStockBoards, fetchDividends, fetchShareInfo, fetchFinancials, fetchMargin, fetchLhbDetail, analyzeStock, predictKline } from '../api.js';
 import { getKline } from '../klinecache.js';
 import { calcChips } from '../chip.js';
 import { indicatorSummary } from '../mytt.js';
@@ -17,6 +17,15 @@ const extras = { code: null, boards: null, flows: null, divi: null, share: null,
 let data = [];                      // 全量K线缓存（最多 250 根）
 let view = { start: 0, count: 90 }; // 当前可视窗口
 const FETCH_N = 250;
+
+// AI 预测的下一交易日蜡烛（紫色叠加在最新真实蜡烛右侧）。
+// 与产生它的 code+period 绑定；股票/周期变化或重新 load 时一律清空，避免串台。
+let predicted = null;       // {open,high,low,close} 或 null
+let predConf = '';          // 高/中/低
+let predBasis = '';         // ≤40字依据
+let predFor = '';           // 'code|period'，校验预测归属
+function clearPredict() { predicted = null; predConf = ''; predBasis = ''; predFor = ''; const box = document.getElementById('klinePredict'); if (box) box.style.display = 'none'; }
+const DISCLAIMER = '⚠️ AI 预测为模型基于历史数据的推演，极可能出错，仅供参考，绝不构成投资建议。';
 
 // 浏览器预览：按代码种子生成稳定的随机游走K线
 function mockCandles(code, n = FETCH_N) {
@@ -72,14 +81,18 @@ function draw() {
   const volH = H - volTop - 10;
   const plotW = W - padL - padR;
 
-  const hi = Math.max(...candles.map(c => c.high));
-  const lo = Math.min(...candles.map(c => c.low));
+  // 是否在最新真实蜡烛右侧追加一根 AI 预测蜡烛：必须有预测、且预测归属当前股+周期、且当前视图已展示到最后一根真实K线
+  const showPred = predicted && predFor === (cur.code + '|' + cur.period) && (view.start + view.count >= data.length);
+  let hi = Math.max(...candles.map(c => c.high));
+  let lo = Math.min(...candles.map(c => c.low));
+  if (showPred) { hi = Math.max(hi, predicted.high); lo = Math.min(lo, predicted.low); }
   const span = hi - lo || 1;
   const y = p => padT + (hi - p) / span * (priceH - padT);
   const maxVol = Math.max(...candles.map(c => c.volume)) || 1;
 
   const n = candles.length;
-  const step = plotW / n;
+  const slots = n + (showPred ? 1 : 0); // 预测蜡烛额外占一个 x 槽位
+  const step = plotW / slots;
   const bw = Math.max(1.5, step * 0.62);
 
   const cs = getComputedStyle(document.body);
@@ -113,6 +126,39 @@ function draw() {
     ctx.fillStyle = up ? 'rgba(255,77,79,.5)' : 'rgba(20,200,125,.5)';
     ctx.fillRect(x - bw / 2, H - 10 - vh, bw, vh);
   });
+
+  // —— AI 预测蜡烛（紫色虚线空心，纯叠加，不改真实蜡烛绘制）——
+  if (showPred) {
+    const PURPLE = '#9b5cff';
+    const px = padL + n * step + step / 2;       // 紧贴最后一根真实蜡烛右侧的槽位
+    const lastReal = candles[n - 1];
+    const lastX = padL + (n - 1) * step + step / 2;
+    // 虚线连接：最后一根真实收盘 → 预测收盘
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = PURPLE; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(lastX, y(lastReal.close)); ctx.lineTo(px, y(predicted.close)); ctx.stroke();
+    // 预测蜡烛影线
+    ctx.beginPath(); ctx.moveTo(px, y(predicted.high)); ctx.lineTo(px, y(predicted.low)); ctx.stroke();
+    // 预测蜡烛实体：空心虚线框（区别于真实的实心红/绿）
+    const yo = y(predicted.open), yc = y(predicted.close);
+    const top = Math.min(yo, yc), hgt = Math.max(1.5, Math.abs(yo - yc));
+    ctx.fillStyle = HOLLOW;
+    ctx.fillRect(px - bw / 2, top, bw, hgt);
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(px - bw / 2, top, bw, hgt);
+    ctx.restore();
+    // 小标签「AI预测」
+    ctx.save();
+    ctx.fillStyle = PURPLE;
+    ctx.font = '13px "DM Mono", monospace';
+    ctx.textBaseline = 'bottom';
+    const lbl = 'AI预测';
+    let lx = px - ctx.measureText(lbl).width / 2;
+    lx = Math.max(padL, Math.min(W - padR - ctx.measureText(lbl).width, lx));
+    ctx.fillText(lbl, lx, Math.max(12, y(predicted.high) - 4));
+    ctx.restore();
+  }
 
   const drawMa = (maData, color) => {
     ctx.strokeStyle = color; ctx.lineWidth = 1.6;
@@ -155,6 +201,7 @@ function resetView() {
 let loadSeq = 0; // 防过期响应：快速切股/切周期时，旧请求回来不覆盖新图
 async function load() {
   const seq = ++loadSeq;
+  clearPredict(); // 重新加载K线 → 旧预测作废
   document.getElementById('klineMeta').textContent = '加载中…';
   let candles = null, stale = false, staleTs = 0;
   if (inTauri) {
@@ -219,16 +266,14 @@ function drawIndicators() {
     `<span>BOLL 上<b>${f(s.boll.up)}</b> 中<b>${f(s.boll.mid)}</b> 下<b>${f(s.boll.low)}</b></span>`;
 }
 
-// AI 解读：把已算好的筹码/指标/行情作为真实数据注入 analyze_stock（数据注入层）
-let aiBusy = false;
-async function aiAnalyze() {
-  if (!aiReady()) { flashHint('先在设置页接入 AI API Key'); return; }
-  if (!data.length) { flashHint('K线未就绪'); return; }
-  if (aiBusy) { flashHint('AI 正在解读，稍候'); return; }
+// 构建喂给 AI 的最丰富真实数据上下文（行情/筹码/指标/财务/资金流/龙虎榜…），解读与预测共用。
+// 返回 {context, last, chg}；context 内含「上一收盘价 X」供后端涨跌停区间校验。
+function buildContext() {
   const last = data[data.length - 1];
   const chg = last.open ? (last.close - last.open) / last.open * 100 : 0;
   const parts = [];
   parts.push(`${cur.name}（${cur.code.toUpperCase()}）现价 ${last.close.toFixed(2)}，今日 ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`);
+  parts.push(`上一收盘价 ${last.close.toFixed(2)}`); // 后端用此值做涨跌停区间校验
   const chip = calcChips(data, 80);
   if (chip) parts.push(`筹码分布：获利比例 ${(chip.profitRatio * 100).toFixed(1)}%，平均成本 ${chip.avgCost.toFixed(2)}，成本区间 ${chip.minPrice.toFixed(2)}–${chip.maxPrice.toFixed(2)}`);
   const ind = indicatorSummary(data);
@@ -279,6 +324,16 @@ async function aiAnalyze() {
     parts.push(`龙虎榜: ${d.date} 上榜（${d.reason}），席位净买额 ${fmtAmt(d.net)}（买入 ${fmtFin(d.buy)}/卖出 ${fmtFin(d.sell)}）${more}`);
   }
   const context = '截至最新交易日，本股真实数据如下：\n' + parts.join('\n');
+  return { context, last, chg };
+}
+
+// AI 解读：把已算好的筹码/指标/行情作为真实数据注入 analyze_stock（数据注入层）
+let aiBusy = false;
+async function aiAnalyze() {
+  if (!aiReady()) { flashHint('先在设置页接入 AI API Key'); return; }
+  if (!data.length) { flashHint('K线未就绪'); return; }
+  if (aiBusy) { flashHint('AI 正在解读，稍候'); return; }
+  const { context, last, chg } = buildContext();
   aiBusy = true;
   flashHint('AI 解读中…（结合筹码/指标）');
   try {
@@ -294,6 +349,52 @@ async function aiAnalyze() {
     } else { flashHint('AI 未返回有效结果'); }
   } catch (e) { flashHint('AI 解读失败：' + e); }
   finally { aiBusy = false; }
+}
+
+// AI 预测：把最丰富真实数据喂给 AI，推演下一交易日 OHLC，紫色蜡烛叠加到图上。
+// 单根蜡烛的 LLM 预测准确度本就很低，结果仅作推演演示，全程保守措辞 + 显著免责声明。
+let predBusy = false;
+async function aiPredict() {
+  if (!aiReady()) { flashHint('先在设置页接入 AI API Key'); return; }
+  if (!data.length) { flashHint('K线未就绪'); return; }
+  if (predBusy) { flashHint('AI 正在推演，稍候'); return; }
+  if (cur.period !== 'day') { flashHint('预测仅支持日K口径'); return; }
+  const { context } = buildContext();
+  const forKey = cur.code + '|' + cur.period;
+  predBusy = true;
+  flashHint('AI 推演下一交易日…（仅供参考，非投资建议）');
+  try {
+    const res = await predictKline(cur.name, cur.code, context);
+    if (cur.code + '|' + cur.period !== forKey) return; // 等待期间已切股/切周期，丢弃
+    if (res && [res.open, res.high, res.low, res.close].every(v => typeof v === 'number' && isFinite(v) && v > 0)) {
+      predicted = { open: res.open, high: res.high, low: res.low, close: res.close };
+      predConf = res.confidence || '中';
+      predBasis = res.basis || '';
+      predFor = forKey;
+      // 视图拉到最右，确保紫色预测蜡烛可见
+      view.start = Math.max(0, data.length - view.count);
+      draw();
+      renderPredictBox();
+    } else { flashHint('AI 未返回有效预测'); }
+  } catch (e) { clearPredict(); flashHint('AI 预测失败：' + e); }
+  finally { predBusy = false; }
+}
+
+// 预测结果文字框：依据 + 置信度 + 显著免责声明（DISCLAIMER 置顶醒目）
+function renderPredictBox() {
+  const box = document.getElementById('klinePredict');
+  if (!box || !predicted) return;
+  const f = v => v.toFixed(2);
+  const chgPct = (() => { const lc = data[data.length - 1]; return lc && lc.close ? (predicted.close - lc.close) / lc.close * 100 : 0; })();
+  const dir = chgPct >= 0 ? 'up-c' : 'down-c';
+  const confCls = predConf === '高' ? 'up-c' : (predConf === '低' ? 'down-c' : '');
+  box.innerHTML =
+    `<div class="kp-disc">${DISCLAIMER}</div>` +
+    `<div class="kp-row"><span style="color:#9b5cff">● AI 推演（下一交易日）</span> ` +
+    `开 <b>${f(predicted.open)}</b> 高 <b>${f(predicted.high)}</b> 低 <b>${f(predicted.low)}</b> 收 <b class="${dir}">${f(predicted.close)}</b> ` +
+    `<span class="${dir}">(${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)</span></div>` +
+    `<div class="kp-row">置信度 <b class="${confCls}">${predConf}</b>${predBasis ? ' · 依据：' + predBasis : ''}</div>`;
+  box.style.display = 'block';
 }
 
 // 筹码分布：用全量日K（含换手率/成交额）算分布并绘制
@@ -592,6 +693,7 @@ async function loadDetail(code) {
 export function showKline(code, name) {
   cur.code = code;
   cur.name = name || code.toUpperCase();
+  clearPredict(); // 切股 → 清旧预测
   document.getElementById('klineName').textContent = `${cur.name} · K线`;
   switchPage('kline');
   load();
@@ -600,10 +702,11 @@ export function showKline(code, name) {
 
 export function initKline() {
   document.getElementById('klineBack').addEventListener('click', () => switchPage('watch'));
-  document.getElementById('klineAi').addEventListener('click', aiAnalyze);
+  document.getElementById('klineAi').addEventListener('click', aiPredict);
   document.querySelectorAll('.kp-btn').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('.kp-btn').forEach(x => x.classList.toggle('active', x === b));
     cur.period = b.dataset.p;
+    clearPredict(); // 切周期 → 清旧预测
     if (cur.code) load();
   }));
 

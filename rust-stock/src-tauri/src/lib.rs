@@ -343,6 +343,156 @@ async fn analyze_stock(
     })
 }
 
+#[derive(serde::Serialize)]
+pub struct KPredict {
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub confidence: String, // 高/中/低
+    pub basis: String,      // <=40字依据
+}
+
+/// 由代码前缀推断A股单日涨跌幅限制（小数，如 0.10 = 10%）。
+/// 创业板 sz300/sz301、科创板 sh688 = 20%；北交所 bj 开头或 8../4.. = 30%；其余主板 10%。
+fn daily_limit_for(code: &str) -> f64 {
+    let c = code.trim().to_lowercase();
+    // 提取纯数字部分（去掉 sh/sz/bj 前缀）
+    let digits: String = c.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    if c.starts_with("bj") {
+        return 0.30; // 北交所
+    }
+    if c.starts_with("sz300") || c.starts_with("sz301") {
+        return 0.20; // 创业板
+    }
+    if c.starts_with("sh688") {
+        return 0.20; // 科创板
+    }
+    // 无前缀 / 兜底：按代码段判定
+    if digits.starts_with("300") || digits.starts_with("301") || digits.starts_with("688") {
+        return 0.20;
+    }
+    if digits.starts_with('8') || digits.starts_with('4') {
+        return 0.30; // 北交所老代码段 8../4..
+    }
+    0.10 // 主板默认 ±10%
+}
+
+/// 纯函数：从 AI 返回的 JSON + 上一收盘价 + 涨跌幅限制，解析并校验出一根预测蜡烛。
+/// 校验：四值为有限正数；high≥max(open,close)；low≤min(open,close)；全部落在 last_close±limit 内。
+/// 任何不满足 → Err（绝不返回垃圾数据）。
+fn parse_predict(v: &serde_json::Value, last_close: f64, limit: f64) -> Result<KPredict, String> {
+    let g = |k: &str| v[k].as_f64();
+    let (open, high, low, close) = match (g("open"), g("high"), g("low"), g("close")) {
+        (Some(o), Some(h), Some(l), Some(c)) => (o, h, l, c),
+        _ => return Err("AI 预测缺少 open/high/low/close 数字字段".into()),
+    };
+    for (name, val) in [("open", open), ("high", high), ("low", low), ("close", close)] {
+        if !val.is_finite() || val <= 0.0 {
+            return Err(format!("AI 预测的 {name} 非有效正数"));
+        }
+    }
+    if high + 1e-9 < open.max(close) || low - 1e-9 > open.min(close) {
+        return Err("AI 预测违反蜡烛约束(high≥max(开,收)且 low≤min(开,收))".into());
+    }
+    if last_close > 0.0 {
+        let up = last_close * (1.0 + limit);
+        let dn = last_close * (1.0 - limit);
+        // 允许极小浮点容差
+        let tol = last_close * 0.005 + 1e-6;
+        for (name, val) in [("open", open), ("high", high), ("low", low), ("close", close)] {
+            if val > up + tol || val < dn - tol {
+                return Err(format!("AI 预测的 {name}={val:.2} 超出昨收±{:.0}% 涨跌停区间", limit * 100.0));
+            }
+        }
+    }
+    let confidence = match v["confidence"].as_str().unwrap_or("中").trim() {
+        s if s.starts_with('高') => "高",
+        s if s.starts_with('低') => "低",
+        _ => "中",
+    }
+    .to_string();
+    let mut basis = v["basis"].as_str().unwrap_or("").trim().to_string();
+    if basis.chars().count() > 60 {
+        basis = basis.chars().take(60).collect::<String>() + "…";
+    }
+    Ok(KPredict { open, high, low, close, confidence, basis })
+}
+
+/// AI 推演下一交易日 K 线（OHLC）。专用 prompt，不复用任何分析/打分模板。
+/// 注意：单根蜡烛的 LLM 预测准确度本就很低，结果仅作推演演示，绝不构成投资建议。
+#[tauri::command]
+async fn predict_kline(
+    key: String,
+    base_url: Option<String>,
+    model: Option<String>,
+    name: String,
+    code: String,
+    context: String, // 前端构建的全部真实数据（行情/筹码/指标/财务/资金流/龙虎榜…），含上一收盘价
+) -> Result<KPredict, String> {
+    let cfg = ai::AiConfig::new(key, base_url, model)?;
+    let limit = daily_limit_for(&code);
+    let limit_pct = (limit * 100.0).round() as i64;
+    let board = match limit_pct {
+        20 => "创业板/科创板",
+        30 => "北交所",
+        _ => "主板",
+    };
+    let prompt = format!(
+        "你是量化推演助手。仅基于【上文提供的真实历史数据】，推演A股「{name}」({code}) **下一个交易日**的 K 线四值(开/高/低/收)。\
+         该股属于{board}，单日涨跌幅限制为 ±{limit_pct}%，你给出的开/高/低/收四个价格【必须】全部落在上一收盘价的 ±{limit_pct}% 区间内，\
+         且必须满足 高≥max(开,收) 且 低≤min(开,收)。这是基于历史的概率性推演，不是预言，请保持克制：\
+         没有强烈信号时收盘价应贴近上一收盘价小幅波动。\
+         置信度按你对该推演的把握给「高/中/低」（多数情况下应为「中」或「低」）。\
+         严格【只输出 JSON】，不要任何解释文字、不要 markdown 代码块：\
+         {{\"open\":数字,\"high\":数字,\"low\":数字,\"close\":数字,\"confidence\":\"高/中/低\",\"basis\":\"40字以内推演依据\"}}"
+    );
+    let messages = vec![
+        serde_json::json!({ "role": "system", "content": "你是严谨克制的量化推演助手。只输出 JSON，不输出任何其他文字。所有结论均为基于历史数据的概率性推演，可能出错，仅供参考，绝不构成投资建议。" }),
+        serde_json::json!({ "role": "user", "content": format!("请先提供「{name}」({code})当前可用的真实历史数据") }),
+        serde_json::json!({ "role": "assistant", "content": context }),
+        serde_json::json!({ "role": "user", "content": format!("{prompt}\n\n【强制规则】严格基于上文真实数据推演，不得编造上文之外的数字；价格须遵守 ±{limit_pct}% 涨跌幅限制。") }),
+    ];
+    let content = ai::chat_once(&cfg, messages, 0.3).await?;
+    let parsed = ai::extract_json(&content)?;
+    // 上一收盘价：从上文 context 难以可靠解析，这里直接信任 AI 输出落在合理区间；
+    // 但若 context 里能解析到，最好用真实值校验。前端会把"上一收盘价 X"写进 context，
+    // 我们尝试从 high/low/close 的合理性 + last_close 校验。last_close 取 close 的兜底已不可靠，
+    // 因此改由前端在 context 内强制给出，后端用正则抠取。
+    let last_close = extract_last_close(&context);
+    parse_predict(&parsed, last_close, limit)
+}
+
+/// 从 context 文本里抠出前端写入的"上一收盘价 X"数值，供涨跌停区间校验用；抠不到返回 0（跳过区间校验）。
+fn extract_last_close(context: &str) -> f64 {
+    // 匹配形如：上一收盘价 12.34 / 上一收盘价：12.34 / 最新收盘 12.34
+    for marker in ["上一收盘价", "最新收盘价", "最新收盘", "上一收盘"] {
+        if let Some(pos) = context.find(marker) {
+            let tail = &context[pos + marker.len()..];
+            let mut num = String::new();
+            let mut seen_dot = false;
+            for ch in tail.chars() {
+                if ch.is_ascii_digit() {
+                    num.push(ch);
+                } else if ch == '.' && !seen_dot && !num.is_empty() {
+                    seen_dot = true;
+                    num.push(ch);
+                } else if num.is_empty() && (ch == ' ' || ch == '：' || ch == ':' || ch == '\u{ff0c}' || ch == ',') {
+                    continue;
+                } else if !num.is_empty() {
+                    break;
+                }
+            }
+            if let Ok(v) = num.parse::<f64>() {
+                if v > 0.0 {
+                    return v;
+                }
+            }
+        }
+    }
+    0.0
+}
+
 /// 解读市场情绪为何处于当前档位（点击表盘翻面时调用）
 #[tauri::command]
 async fn explain_sentiment(
@@ -934,6 +1084,7 @@ pub fn run() {
             quit_app,
             ask_ai,
             analyze_stock,
+            predict_kline,
             explain_sentiment,
             toggle_dock_edge,
             fetch_quotes,
@@ -1036,3 +1187,62 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running rust-stock");
 }
+
+
+#[cfg(test)]
+mod predict_tests {
+    use super::*;
+
+    #[test]
+    fn test_daily_limit_for() {
+        assert!((daily_limit_for("sz300750") - 0.20).abs() < 1e-9); // 创业板
+        assert!((daily_limit_for("sz301027") - 0.20).abs() < 1e-9); // 创业板
+        assert!((daily_limit_for("sh688981") - 0.20).abs() < 1e-9); // 科创板
+        assert!((daily_limit_for("bj830799") - 0.30).abs() < 1e-9); // 北交所
+        assert!((daily_limit_for("sh600519") - 0.10).abs() < 1e-9); // 主板
+        assert!((daily_limit_for("sz000001") - 0.10).abs() < 1e-9); // 主板
+    }
+
+    #[test]
+    fn test_extract_last_close() {
+        assert!((extract_last_close("……上一收盘价 12.34，今日…") - 12.34).abs() < 1e-9);
+        assert!((extract_last_close("最新收盘 8.5\n其他") - 8.5).abs() < 1e-9);
+        assert_eq!(extract_last_close("没有收盘价字段"), 0.0);
+    }
+
+    #[test]
+    fn test_parse_predict_ok() {
+        let v = serde_json::json!({"open":10.1,"high":10.5,"low":9.9,"close":10.3,"confidence":"中","basis":"小幅震荡"});
+        let p = parse_predict(&v, 10.0, 0.10).unwrap();
+        assert!((p.close - 10.3).abs() < 1e-9);
+        assert_eq!(p.confidence, "中");
+    }
+
+    #[test]
+    fn test_parse_predict_bad_candle() {
+        // high < close 违反约束
+        let v = serde_json::json!({"open":10.0,"high":10.0,"low":9.0,"close":10.5,"confidence":"高","basis":"x"});
+        assert!(parse_predict(&v, 10.0, 0.10).is_err());
+    }
+
+    #[test]
+    fn test_parse_predict_over_limit() {
+        // close 比昨收涨 20%，超出主板 10%
+        let v = serde_json::json!({"open":10.0,"high":12.0,"low":10.0,"close":12.0,"confidence":"中","basis":"x"});
+        assert!(parse_predict(&v, 10.0, 0.10).is_err());
+    }
+
+    #[test]
+    fn test_parse_predict_missing_field() {
+        let v = serde_json::json!({"open":10.0,"high":10.5,"low":9.9});
+        assert!(parse_predict(&v, 10.0, 0.10).is_err());
+    }
+
+    #[test]
+    fn test_confidence_normalize() {
+        let v = serde_json::json!({"open":10.0,"high":10.5,"low":9.5,"close":10.0,"confidence":"低位","basis":""});
+        let p = parse_predict(&v, 10.0, 0.10).unwrap();
+        assert_eq!(p.confidence, "低");
+    }
+}
+
